@@ -33,8 +33,12 @@ import {
   Cloud,
   CloudOff,
   RefreshCw,
+  LogOut,
+  Lock,
+  User as UserIcon,
   Plus,
-  X
+  X,
+  Download
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -48,6 +52,11 @@ import { secretariats as initialSecretariats, locations as initialLocations } fr
 import { APIProvider, Map as GoogleMap, AdvancedMarker, Pin, InfoWindow, useAdvancedMarkerRef, useMap } from '@vis.gl/react-google-maps';
 import { extractCoordsFromGoogleMapsLink } from './lib/maps';
 import { supabase } from './lib/supabase';
+
+interface UserProfile {
+  username: string;
+  role: 'admin' | 'viewer';
+}
 
 // Icons mapping helper
 const IconMap: { [key: string]: any } = {
@@ -169,14 +178,115 @@ export default function App() {
   const [reportingLocProblem, setReportingLocProblem] = useState<Location | null>(null);
   const [deletingItem, setDeletingItem] = useState<{ type: 'sec' | 'loc' | 'cam', id: string, extraId?: string, name: string } | null>(null);
 
+  // Auth State
+  const [user, setUser] = useState<UserProfile | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [loginError, setLoginError] = useState<string | null>(null);
+
   // Search State
   const [searchQuery, setSearchQuery] = useState('');
 
   // Sync Status
   const [syncStatus, setSyncStatus] = useState<'synced' | 'syncing' | 'error' | 'idle'>('idle');
+  const [syncErrorMessage, setSyncErrorMessage] = useState<string | null>(null);
+
+  // Load Auth Session
+  useEffect(() => {
+    const savedUser = localStorage.getItem('civa_user');
+    if (savedUser) {
+      setUser(JSON.parse(savedUser));
+    }
+    setAuthLoading(false);
+  }, []);
+
+  const handleLogin = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    setLoginError(null);
+    const formData = new FormData(e.currentTarget);
+    const username = formData.get('username') as string;
+    const password = formData.get('password') as string;
+
+    // Based on user request credentials
+    if (username === 'renato' && password === '32604509') {
+      const newUser: UserProfile = { username, role: 'admin' };
+      setUser(newUser);
+      localStorage.setItem('civa_user', JSON.stringify(newUser));
+      
+      // Try to sign in to Supabase in background for real persistence if configured
+      if (supabase) {
+        // We use a dummy email for Supabase Auth since it requires one
+        const email = `${username}@civa.com`;
+        supabase.auth.signInWithPassword({ email, password }).catch(err => {
+          console.warn("Supabase auth background attempt failed (expected if not using Auth):", err.message);
+        });
+      }
+    } else {
+      setLoginError('Usuário ou senha incorretos.');
+    }
+  };
+
+  const handleLogout = async () => {
+    setUser(null);
+    localStorage.removeItem('civa_user');
+    if (supabase) {
+      await supabase.auth.signOut();
+    }
+  };
+
+  const exportToCSV = () => {
+    // Basic CSV data gathering
+    const headers = ['Local', 'Secretaria', 'Sub-Secretaria', 'IP', 'Servidor', 'Link Mapa', 'Total Câmeras'];
+    const rows = locations.map(l => {
+      const sec = secretariats.find(s => s.id === l.secretariatId)?.name || l.secretariatId;
+      return [
+        l.name,
+        sec,
+        l.subSecretariat || '',
+        l.ip || '',
+        l.server || '',
+        l.mapsLink || '',
+        l.cameras.length
+      ].map(v => typeof v === 'string' ? `"${v.replace(/"/g, '""')}"` : v);
+    });
+
+    const csvContent = [headers, ...rows].map(e => e.join(",")).join("\n");
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    link.setAttribute("download", `CIVA_Export_${new Date().toISOString().split('T')[0]}.csv`);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const handleManualSync = async () => {
+    if (!supabase) {
+      alert('Configuração do Supabase (URL/Key) não encontrada nos Secrets.');
+      return;
+    }
+    setSyncStatus('syncing');
+    setSyncErrorMessage(null);
+    
+    try {
+      // Tenta primeiro empurrar o estado local para garantir que a nuvem tenha os dados mais recentes
+      // E serve como teste de conexão/esquema
+      await saveState(secretariats, locations, maintenanceLogs);
+      
+      // Depois recarrega para sincronizar qualquer mudança vinda de fora (se houver)
+      // Mas aqui vamos apenas marcar como sincronizado se o saveState deu certo
+      setSyncStatus('synced');
+    } catch (err: any) {
+      console.error('Manual sync failed:', err);
+      setSyncStatus('error');
+      setSyncErrorMessage(err.message || 'Falha na sincronização.');
+    }
+  };
 
   // Persist state to localStorage and Supabase
   useEffect(() => {
+    if (!user) return;
     const loadData = async () => {
       setSyncStatus('syncing');
       // 1. Load from localStorage first (for immediate feedback)
@@ -234,34 +344,86 @@ export default function App() {
           const [secRes, locRes, logRes] = await Promise.all([
             supabase.from('secretariats').select('*'),
             supabase.from('locations').select('*'),
-            supabase.from('maintenance_logs').select('*').order('timestamp', { ascending: false })
+            supabase.from('maintenance_logs').select('*')
           ]);
 
+          if (secRes.error) {
+            if (secRes.error.code === '42P01') throw new Error("A tabela 'secretariats' não existe. Rode o SQL.");
+            throw new Error(`Erro na tabela 'secretariats': ${secRes.error.message}`);
+          }
+          if (locRes.error) {
+            if (locRes.error.code === '42P01') throw new Error("A tabela 'locations' não existe. Rode o SQL.");
+            throw new Error(`Erro na tabela 'locations': ${locRes.error.message}`);
+          }
+          if (logRes.error) {
+            if (logRes.error.code === '42P01') throw new Error("A tabela 'maintenance_logs' não existe. Rode o SQL.");
+            throw new Error(`Erro na tabela 'maintenance_logs': ${logRes.error.message}`);
+          }
+
           let hasCloudData = false;
+
+          // Process Secretariats
           if (secRes.data && secRes.data.length > 0) {
-            setSecretariats(secRes.data);
-            localStorage.setItem('civa_secretariats', JSON.stringify(secRes.data));
-            hasCloudData = true;
-          }
-          if (locRes.data && locRes.data.length > 0) {
-            setLocations(locRes.data);
-            localStorage.setItem('civa_locations', JSON.stringify(locRes.data));
-            hasCloudData = true;
-          }
-          if (logRes.data && logRes.data.length > 0) {
-            setMaintenanceLogs(logRes.data);
-            localStorage.setItem('civa_logs', JSON.stringify(logRes.data));
+            const mappedSecs = secRes.data.map((s: any) => ({ 
+              id: s.id, 
+              name: s.name, 
+              icon: s.icon || 'building' 
+            }));
+            setSecretariats(mappedSecs);
+            localStorage.setItem('civa_secretariats', JSON.stringify(mappedSecs));
             hasCloudData = true;
           }
 
-          // If cloud is empty but local has data, push local to cloud
-          if (!hasCloudData && (savedSecs || savedLocations || savedLogs)) {
-            await saveState(finalSecs, finalLocs, finalLogs);
+          // Process Locations (mapping snake_case to camelCase)
+          if (locRes.data && locRes.data.length > 0) {
+            const mappedLocs = locRes.data.map((l: any) => ({
+              id: l.id,
+              name: l.name,
+              ip: l.ip || '',
+              server: l.server || '',
+              secretariatId: l.secretariat_id,
+              subSecretariat: l.sub_secretariat || '',
+              cameras: l.cameras || [],
+              mapsLink: l.maps_link || ''
+            }));
+            setLocations(mappedLocs);
+            localStorage.setItem('civa_locations', JSON.stringify(mappedLocs));
+            hasCloudData = true;
           }
-          setSyncStatus('synced');
-        } catch (err) {
+
+          // Process Logs (mapping snake_case to camelCase)
+          if (logRes.data && logRes.data.length > 0) {
+            const mappedLogs = logRes.data.map((l: any) => ({
+              id: l.id,
+              cameraId: l.camera_id || 'GERAL',
+              locationId: l.location_id,
+              timestamp: l.timestamp,
+              dataConserto: l.data_conserto || '',
+              descricaoTecnica: l.descricao_tecnica || '',
+              ipLocal: l.ip_local || '',
+              servidor: l.servidor || ''
+            }));
+            setMaintenanceLogs(mappedLogs);
+            localStorage.setItem('civa_logs', JSON.stringify(mappedLogs));
+            hasCloudData = true;
+          }
+
+          // Force push local data to cloud on first load if cloud was empty
+          if (!hasCloudData && (finalSecs.length > 0 || finalLocs.length > 0)) {
+            console.log("Supabase empty, pushing local data...");
+            await saveState(finalSecs, finalLocs, finalLogs);
+          } else {
+            setSyncStatus('synced');
+            setSyncErrorMessage(null);
+          }
+        } catch (err: any) {
           console.error('Error fetching from Supabase:', err);
           setSyncStatus('error');
+          if (err.message?.includes('not found') || err.message?.includes('Invalid path') || err.code === 'PGRST301' || err.code === '42P01') {
+            setSyncErrorMessage('Erro: Tabelas não encontradas. Verifique se a URL/Key nos Secrets são do projeto atual e se o SQL foi rodado no Supabase.');
+          } else {
+            setSyncErrorMessage(err.message || 'Falha ao conectar com o banco.');
+          }
         }
       } else {
         setSyncStatus('idle');
@@ -269,43 +431,92 @@ export default function App() {
     };
 
     loadData();
-  }, []);
+  }, [user]);
 
   const saveState = async (newSecs: Secretariat[], newLocations: Location[], newLogs: MaintenanceLog[]) => {
-    // Save to localStorage immediately
+    // 1. Always Save to localStorage immediately
     localStorage.setItem('civa_secretariats', JSON.stringify(newSecs));
     localStorage.setItem('civa_locations', JSON.stringify(newLocations));
     localStorage.setItem('civa_logs', JSON.stringify(newLogs));
 
-    // Sync to Supabase in background
+    // 2. Sync to Supabase in background
     if (supabase) {
       setSyncStatus('syncing');
       try {
-        const results = await Promise.allSettled([
-          supabase.from('secretariats').upsert(newSecs),
-          supabase.from('locations').upsert(newLocations),
-          supabase.from('maintenance_logs').upsert(newLogs)
-        ]);
+        // Prepare data: ensure we don't send undefined values
+        const cleanSecs = newSecs.map(s => ({ 
+          id: s.id, 
+          name: s.name, 
+          icon: s.icon 
+        }));
+        
+        const cleanLocs = newLocations.map(l => ({
+          id: l.id,
+          name: l.name,
+          ip: l.ip || null,
+          server: l.server || null,
+          secretariat_id: l.secretariatId,
+          sub_secretariat: l.subSecretariat || null,
+          cameras: l.cameras || [], // JSONB
+          maps_link: l.mapsLink || null
+        }));
+
+        const cleanLogs = newLogs.map(l => ({
+          id: l.id,
+          camera_id: l.cameraId,
+          location_id: l.locationId,
+          timestamp: l.timestamp,
+          data_conserto: l.dataConserto || 'PENDENTE',
+          descricao_tecnica: l.descricaoTecnica || '',
+          ip_local: l.ipLocal || null,
+          servidor: l.servidor || null
+        }));
+
+        // Use sequential upserts to handle foreign key dependencies (Secs -> Locs -> Logs)
+        const results = [];
+        
+        const r1 = await supabase.from('secretariats').upsert(cleanSecs, { onConflict: 'id' });
+        results.push({ table: 'secretariats', res: r1 });
+        
+        const r2 = await supabase.from('locations').upsert(cleanLocs, { onConflict: 'id' });
+        results.push({ table: 'locations', res: r2 });
+        
+        const r3 = await supabase.from('maintenance_logs').upsert(cleanLogs, { onConflict: 'id' });
+        results.push({ table: 'maintenance_logs', res: r3 });
         
         let hasError = false;
-        results.forEach((res, i) => {
-          if (res.status === 'rejected') {
-            console.error(`Supabase sync ${i} rejected:`, res.reason);
+        let errorMessage = "";
+        
+        results.forEach(({ table, res }) => {
+          if (res.error) {
+            console.error(`Supabase Error (${table}):`, res.error);
             hasError = true;
-          } else if (res.value.error) {
-            console.error(`Supabase sync ${i} error:`, res.value.error);
-            hasError = true;
+            // Detailed error mapping
+            if (res.error.code === '42P01') {
+              errorMessage = `Tabela "${table}" não encontrada. Verifique se você rodou o Script SQL no editor do Supabase.`;
+            } else if (res.error.code === '42703') {
+              errorMessage = `Erro de Coluna na tabela "${table}". Verifique se o SQL está atualizado.`;
+            } else if (res.error.code === '23503') {
+              errorMessage = `Erro de vínculo: A unidade de ${table === 'locations' ? 'Secretaria' : 'Local'} não existe.`;
+            } else if (res.error.code === '42501') {
+              errorMessage = `Permissão negada (RLS). Habilite o acesso para todos na tabela "${table}".`;
+            } else {
+              errorMessage = `Erro (${table}): ${res.error.message}`;
+            }
           }
         });
 
         if (hasError) {
           setSyncStatus('error');
+          setSyncErrorMessage(errorMessage);
         } else {
           setSyncStatus('synced');
+          setSyncErrorMessage(null);
         }
       } catch (err) {
-        console.error('Error syncing to Supabase:', err);
+        console.error('Erro crítico na sincronização:', err);
         setSyncStatus('error');
+        setSyncErrorMessage("Erro interno no aplicativo.");
       }
     }
   };
@@ -809,6 +1020,92 @@ export default function App() {
     }
   }, [currentView, locations]);
 
+  if (authLoading) {
+    return (
+      <div className="h-screen bg-slate-900 flex items-center justify-center">
+        <RefreshCw className="w-8 h-8 text-blue-500 animate-spin" />
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <div className="h-screen bg-slate-900 flex items-center justify-center p-4 relative overflow-hidden">
+        {/* Background Effects */}
+        <div className="absolute top-0 left-0 w-full h-full">
+          <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-blue-600/20 blur-[120px] rounded-full"></div>
+          <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-emerald-600/20 blur-[120px] rounded-full"></div>
+        </div>
+
+        <motion.div 
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="w-full max-w-md bg-slate-800/50 backdrop-blur-3xl border border-slate-700/50 p-8 sm:p-10 rounded-[2.5rem] shadow-2xl relative z-10"
+        >
+          <div className="text-center mb-10">
+            <div className="w-20 h-20 bg-blue-600 rounded-3xl flex items-center justify-center mx-auto mb-6 shadow-2xl shadow-blue-600/40 transform rotate-6 border-4 border-slate-800">
+              <ShieldCheck className="w-10 h-10 text-white" />
+            </div>
+            <h1 className="text-3xl font-black text-white tracking-tight uppercase italic mb-2">Acesso Restrito</h1>
+            <p className="text-slate-400 text-xs font-bold uppercase tracking-widest leading-relaxed">CIVA - Gestão Vigilância Aquiraz</p>
+          </div>
+
+          <form onSubmit={handleLogin} className="space-y-6">
+            <div className="space-y-2">
+              <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Usuário</label>
+              <div className="relative group">
+                <UserIcon className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 group-focus-within:text-blue-400 transition-colors" />
+                <input 
+                  type="text" 
+                  name="username"
+                  required
+                  placeholder="Seu usuário"
+                  className="w-full bg-slate-900/50 border border-slate-700 text-slate-100 pl-12 pr-4 py-4 rounded-2xl focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all font-bold text-sm placeholder:text-slate-700"
+                />
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Senha</label>
+              <div className="relative group">
+                <Lock className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 group-focus-within:text-blue-400 transition-colors" />
+                <input 
+                  type="password" 
+                  name="password"
+                  required
+                  placeholder="••••••••"
+                  className="w-full bg-slate-900/50 border border-slate-700 text-slate-100 pl-12 pr-4 py-4 rounded-2xl focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all font-bold text-sm placeholder:text-slate-700"
+                />
+              </div>
+            </div>
+
+            {loginError && (
+              <motion.div 
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: 'auto' }}
+                className="bg-rose-500/10 border border-rose-500/20 text-rose-400 p-4 rounded-2xl text-[10px] font-black uppercase tracking-widest text-center"
+              >
+                {loginError}
+              </motion.div>
+            )}
+
+            <button 
+              type="submit"
+              className="w-full bg-blue-600 hover:bg-blue-500 text-white font-black py-4 rounded-2xl shadow-xl shadow-blue-600/20 transition-all active:scale-[0.98] uppercase tracking-widest text-xs flex items-center justify-center gap-3"
+            >
+              Entrar no Sistema
+              <ChevronRight className="w-4 h-4" />
+            </button>
+          </form>
+
+          <p className="mt-8 text-center text-[10px] font-bold text-slate-500 uppercase tracking-widest opacity-50">
+            Aquiraz • Segurança Eletrônica • {new Date().getFullYear()}
+          </p>
+        </motion.div>
+      </div>
+    );
+  }
+
   return (
     <div className="h-screen bg-slate-50 flex flex-col font-sans selection:bg-blue-100 selection:text-blue-900 overflow-hidden">
       {/* Top Header */}
@@ -858,22 +1155,31 @@ export default function App() {
             </div>
 
             <nav className="hidden md:flex items-center gap-4">
-              {/* Sync Status Icon */}
-              <div 
-                className={`flex items-center gap-2 px-2 py-1 rounded-lg border transition-all ${
+              {/* Sync Status Icon & Manual Sync */}
+              <button 
+                onClick={handleManualSync}
+                disabled={syncStatus === 'syncing'}
+                className={`flex items-center gap-2 px-2 py-1 rounded-lg border transition-all hover:scale-105 active:scale-95 ${
                   syncStatus === 'syncing' ? 'bg-blue-800/50 border-blue-700' : 
                   syncStatus === 'synced' ? 'bg-emerald-900/50 border-emerald-700/50' : 
                   syncStatus === 'error' ? 'bg-rose-900/50 border-rose-700/50' : 'bg-transparent border-transparent'
                 }`}
-                title={syncStatus === 'syncing' ? 'Sincronizando com Supabase' : 
-                       syncStatus === 'synced' ? 'Sincronizado com Nuvem' : 
-                       syncStatus === 'error' ? 'Erro ao salvar na nuvem' : 'Offline'}
+                title={syncErrorMessage ? `Erro: ${syncErrorMessage}` : "Clique para forçar sincronização com a nuvem"}
               >
                 {syncStatus === 'syncing' && <RefreshCw className="w-3.5 h-3.5 text-blue-300 animate-spin" />}
                 {syncStatus === 'synced' && <Cloud className="w-3.5 h-3.5 text-emerald-400" />}
                 {syncStatus === 'error' && <CloudOff className="w-3.5 h-3.5 text-rose-400" />}
                 {syncStatus === 'idle' && <CloudOff className="w-3.5 h-3.5 text-blue-700" />}
-              </div>
+                <span className="text-[8px] font-black text-white/50 uppercase tracking-widest hidden lg:block">Nuvem</span>
+              </button>
+
+              <button 
+                onClick={exportToCSV}
+                className="flex items-center gap-2 px-3 py-1 rounded-lg text-[10px] font-black text-blue-300 hover:bg-blue-800 uppercase tracking-widest transition-all"
+                title="Exportar dados locais para CSV"
+              >
+                <Download className="w-3.5 h-3.5" /> <span className="hidden xl:inline">Exportar CSV</span>
+              </button>
 
               <button 
                 onClick={() => handleSelectView('dashboard')}
@@ -901,11 +1207,29 @@ export default function App() {
               </button>
             </nav>
             <div className="h-8 w-px bg-blue-800"></div>
-            <button className="flex items-center gap-2 group">
-              <div className="w-8 h-8 rounded-full bg-blue-700 flex items-center justify-center text-xs font-bold border border-blue-600 group-hover:bg-blue-600 transition-colors">
-                AD
+            <div className="flex items-center gap-3">
+              <div className="hidden sm:block text-right">
+                <p className="text-[10px] font-black text-blue-200 uppercase tracking-tighter leading-none">{user?.username}</p>
+                <p className="text-[8px] font-bold text-blue-400 uppercase tracking-widest mt-0.5">Administrador</p>
               </div>
-            </button>
+              <div className="relative group">
+                <div className="w-9 h-9 rounded-full bg-blue-700 flex items-center justify-center text-xs font-bold border border-blue-600 overflow-hidden shadow-lg group-hover:bg-blue-600 transition-colors">
+                  <UserIcon className="w-5 h-5 text-blue-100" />
+                </div>
+                <div className="absolute top-full right-0 mt-2 w-48 bg-white rounded-2xl shadow-2xl border border-slate-100 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all py-2 z-50">
+                  <div className="px-4 py-2 border-b border-slate-50">
+                    <p className="text-[10px] font-black text-slate-900 uppercase">Ações do Perfil</p>
+                  </div>
+                  <button 
+                    onClick={handleLogout}
+                    className="w-full px-4 py-2 text-left hover:bg-slate-50 flex items-center gap-2 text-slate-600 transition-colors"
+                  >
+                    <LogOut className="w-4 h-4 text-rose-500" />
+                    <span className="text-[10px] font-black uppercase tracking-widest">Sair do Sistema</span>
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </header>
@@ -1253,6 +1577,38 @@ export default function App() {
               exit={{ opacity: 0, x: -20 }}
               className="space-y-8"
             >
+              {/* Sync Error Alert */}
+              {syncStatus === 'error' && (
+                <div className="mb-8 p-6 bg-rose-50 border-2 border-rose-200 rounded-3xl flex items-start gap-4 shadow-xl shadow-rose-900/5 animate-in fade-in slide-in-from-top-4">
+                  <CloudOff className="w-8 h-8 text-rose-500 shrink-0" />
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <h4 className="text-rose-900 font-black uppercase tracking-tight text-lg">Erro na Nuvem</h4>
+                      <span className="px-2 py-0.5 bg-rose-200 text-rose-800 text-[10px] font-black rounded-full">ACTION REQUIRED</span>
+                    </div>
+                    <p className="text-rose-700 text-sm font-medium leading-relaxed">
+                      {syncErrorMessage || 'Ocorreu um erro ao tentar conectar com o Supabase.'}
+                    </p>
+                    <div className="pt-3 flex gap-3">
+                      <button 
+                        onClick={handleManualSync}
+                        className="px-5 py-2 bg-rose-600 text-white rounded-xl text-xs font-black uppercase tracking-widest hover:bg-rose-700 transition-colors shadow-lg shadow-rose-600/30 flex items-center gap-2"
+                      >
+                       <RefreshCw className="w-3 h-3" /> Tentar Novamente
+                      </button>
+                      <a 
+                        href="https://supabase.com/dashboard" 
+                        target="_blank" 
+                        rel="noreferrer"
+                        className="px-5 py-2 bg-white text-rose-600 border border-rose-200 rounded-xl text-xs font-black uppercase tracking-widest hover:bg-rose-50 transition-colors"
+                      >
+                        Abrir Painel Supabase
+                      </a>
+                    </div>
+                  </div>
+                </div>
+              )}
+
               <div className="flex items-center gap-6">
                 <button 
                   onClick={() => setCurrentView('dashboard')}
