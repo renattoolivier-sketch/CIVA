@@ -273,10 +273,6 @@ export default function App() {
       // Tenta primeiro empurrar o estado local para garantir que a nuvem tenha os dados mais recentes
       // E serve como teste de conexão/esquema
       await saveState(secretariats, locations, maintenanceLogs);
-      
-      // Depois recarrega para sincronizar qualquer mudança vinda de fora (se houver)
-      // Mas aqui vamos apenas marcar como sincronizado se o saveState deu certo
-      setSyncStatus('synced');
     } catch (err: any) {
       console.error('Manual sync failed:', err);
       setSyncStatus('error');
@@ -342,22 +338,22 @@ export default function App() {
       if (supabase) {
         try {
           const [secRes, locRes, logRes] = await Promise.all([
-            supabase.from('secretariats').select('*'),
-            supabase.from('locations').select('*'),
-            supabase.from('maintenance_logs').select('*')
+            supabase.from('Secretariats').select('*'),
+            supabase.from('Locations').select('*'),
+            supabase.from('Maintenance_logs').select('*')
           ]);
 
           if (secRes.error) {
-            if (secRes.error.code === '42P01') throw new Error("A tabela 'secretariats' não existe. Rode o SQL.");
-            throw new Error(`Erro na tabela 'secretariats': ${secRes.error.message}`);
+            if (secRes.error.code === '42P01') throw new Error("A tabela 'Secretariats' não existe. Rode o SQL.");
+            throw new Error(`Erro na tabela 'Secretariats': ${secRes.error.message}`);
           }
           if (locRes.error) {
-            if (locRes.error.code === '42P01') throw new Error("A tabela 'locations' não existe. Rode o SQL.");
-            throw new Error(`Erro na tabela 'locations': ${locRes.error.message}`);
+            if (locRes.error.code === '42P01') throw new Error("A tabela 'Locations' não existe. Rode o SQL.");
+            throw new Error(`Erro na tabela 'Locations': ${locRes.error.message}`);
           }
           if (logRes.error) {
-            if (logRes.error.code === '42P01') throw new Error("A tabela 'maintenance_logs' não existe. Rode o SQL.");
-            throw new Error(`Erro na tabela 'maintenance_logs': ${logRes.error.message}`);
+            if (logRes.error.code === '42P01') throw new Error("A tabela 'Maintenance_logs' não existe. Rode o SQL.");
+            throw new Error(`Erro na tabela 'Maintenance_logs': ${logRes.error.message}`);
           }
 
           let hasCloudData = false;
@@ -366,7 +362,7 @@ export default function App() {
           if (secRes.data && secRes.data.length > 0) {
             const mappedSecs = secRes.data.map((s: any) => ({ 
               id: s.id, 
-              name: s.name, 
+              name: s.name || s.Name || '', 
               icon: s.icon || 'building' 
             }));
             setSecretariats(mappedSecs);
@@ -378,7 +374,7 @@ export default function App() {
           if (locRes.data && locRes.data.length > 0) {
             const mappedLocs = locRes.data.map((l: any) => ({
               id: l.id,
-              name: l.name,
+              name: l.name || l.Name || '',
               ip: l.ip || '',
               server: l.server || '',
               secretariatId: l.secretariat_id,
@@ -446,20 +442,26 @@ export default function App() {
         // Prepare data: ensure we don't send undefined values
         const cleanSecs = newSecs.map(s => ({ 
           id: s.id, 
-          name: s.name, 
+          name: s.name, // Keep lowercase as per screenshot
           icon: s.icon 
         }));
         
         const cleanLocs = newLocations.map(l => ({
           id: l.id,
-          name: l.name,
+          name: l.name, // Will be mapped to 'name' or 'Name' below
           ip: l.ip || null,
           server: l.server || null,
           secretariat_id: l.secretariatId,
           sub_secretariat: l.subSecretariat || null,
-          cameras: l.cameras || [], // JSONB
+          cameras: l.cameras || [], 
           maps_link: l.mapsLink || null
         }));
+
+        // Adjust for potential 'Name' capitalization in Supabase
+        const payloadLocs = cleanLocs.map(l => {
+          const { name, ...rest } = l;
+          return { ...rest, Name: name }; // Force Name capitalized as per user screenshot
+        });
 
         const cleanLogs = newLogs.map(l => ({
           id: l.id,
@@ -475,14 +477,14 @@ export default function App() {
         // Use sequential upserts to handle foreign key dependencies (Secs -> Locs -> Logs)
         const results = [];
         
-        const r1 = await supabase.from('secretariats').upsert(cleanSecs, { onConflict: 'id' });
-        results.push({ table: 'secretariats', res: r1 });
+        const r1 = await supabase.from('Secretariats').upsert(cleanSecs, { onConflict: 'id' });
+        results.push({ table: 'Secretariats', res: r1 });
         
-        const r2 = await supabase.from('locations').upsert(cleanLocs, { onConflict: 'id' });
-        results.push({ table: 'locations', res: r2 });
+        const r2 = await supabase.from('Locations').upsert(payloadLocs, { onConflict: 'id' });
+        results.push({ table: 'Locations', res: r2 });
         
-        const r3 = await supabase.from('maintenance_logs').upsert(cleanLogs, { onConflict: 'id' });
-        results.push({ table: 'maintenance_logs', res: r3 });
+        const r3 = await supabase.from('Maintenance_logs').upsert(cleanLogs, { onConflict: 'id' });
+        results.push({ table: 'Maintenance_logs', res: r3 });
         
         let hasError = false;
         let errorMessage = "";

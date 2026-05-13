@@ -1,7 +1,8 @@
--- Script SQL para criar as tabelas no Supabase (Rodar no SQL Editor)
+-- SCRIPT FINAL PARA O NOVO PROJETO SUPABASE
+-- Copie e cole tudo no SQL Editor do Supabase e clique em RUN
 
 -- 1. Tabela de Secretarias
-CREATE TABLE IF NOT EXISTS secretariats (
+CREATE TABLE IF NOT EXISTS "Secretariats" (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   icon TEXT DEFAULT 'building',
@@ -9,12 +10,12 @@ CREATE TABLE IF NOT EXISTS secretariats (
 );
 
 -- 2. Tabela de Locais
-CREATE TABLE IF NOT EXISTS locations (
+CREATE TABLE IF NOT EXISTS "Locations" (
   id TEXT PRIMARY KEY,
-  name TEXT NOT NULL,
+  "Name" TEXT NOT NULL,
   ip TEXT,
   server TEXT,
-  secretariat_id TEXT REFERENCES secretariats(id) ON DELETE CASCADE,
+  secretariat_id TEXT REFERENCES "Secretariats"(id) ON DELETE CASCADE,
   sub_secretariat TEXT,
   cameras JSONB DEFAULT '[]'::jsonb,
   maps_link TEXT,
@@ -22,10 +23,10 @@ CREATE TABLE IF NOT EXISTS locations (
 );
 
 -- 3. Tabela de Manutenção (Logs)
-CREATE TABLE IF NOT EXISTS maintenance_logs (
+CREATE TABLE IF NOT EXISTS "Maintenance_logs" (
   id TEXT PRIMARY KEY,
   camera_id TEXT NOT NULL,
-  location_id TEXT REFERENCES locations(id) ON DELETE CASCADE,
+  location_id TEXT REFERENCES "Locations"(id) ON DELETE CASCADE,
   timestamp TEXT NOT NULL,
   data_conserto TEXT DEFAULT 'PENDENTE',
   descricao_tecnica TEXT DEFAULT '',
@@ -34,13 +35,12 @@ CREATE TABLE IF NOT EXISTS maintenance_logs (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 4. Habilitar RLS (Row Level Security) - Desabilitado por padrão para facilitar o teste inicial
--- Se quiser segurança total, habilite e crie as políticas:
-ALTER TABLE secretariats ENABLE ROW LEVEL SECURITY;
-ALTER TABLE locations ENABLE ROW LEVEL SECURITY;
-ALTER TABLE maintenance_logs ENABLE ROW LEVEL SECURITY;
+-- 4. Habilitar RLS (Segurança)
+ALTER TABLE "Secretariats" ENABLE ROW LEVEL SECURITY;
+ALTER TABLE "Locations" ENABLE ROW LEVEL SECURITY;
+ALTER TABLE "Maintenance_logs" ENABLE ROW LEVEL SECURITY;
 
--- 5. Políticas de acesso para todos (Leitura e Escrita)
-CREATE POLICY "Acesso público Secretariats" ON secretariats FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "Acesso público Locations" ON locations FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "Acesso público Maintenance Logs" ON maintenance_logs FOR ALL USING (true) WITH CHECK (true);
+-- 5. Políticas de Acesso Público (Leitura e Escrita)
+CREATE POLICY "Acesso público Secretariats" ON "Secretariats" FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Acesso público Locations" ON "Locations" FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Acesso público Maintenance Logs" ON "Maintenance_logs" FOR ALL USING (true) WITH CHECK (true);
