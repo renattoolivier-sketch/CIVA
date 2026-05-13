@@ -38,7 +38,9 @@ import {
   User as UserIcon,
   Plus,
   X,
-  Download
+  Download,
+  ShieldAlert,
+  Key
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -54,6 +56,7 @@ import { extractCoordsFromGoogleMapsLink } from './lib/maps';
 import { supabase } from './lib/supabase';
 
 interface UserProfile {
+  id?: string;
   username: string;
   role: 'admin' | 'viewer';
 }
@@ -156,13 +159,14 @@ function MapBoundsHandler({ mappedLocations }: { mappedLocations: { coords: { la
 }
 
 export default function App() {
-  const [currentView, setCurrentView] = useState<'dashboard' | 'cameras' | 'history' | 'locations' | 'reports' | 'map'>('dashboard');
+  const [currentView, setCurrentView] = useState<'dashboard' | 'cameras' | 'history' | 'locations' | 'reports' | 'map' | 'users'>('dashboard');
   const [selectedSecretariat, setSelectedSecretariat] = useState<Secretariat | null>(null);
   const [selectedLocation, setSelectedLocation] = useState<Location | null>(null);
   const [selectedTab, setSelectedTab] = useState<string | null>(null);
   const [secretariats, setSecretariats] = useState<Secretariat[]>(initialSecretariats);
   const [locations, setLocations] = useState<Location[]>(initialLocations);
   const [maintenanceLogs, setMaintenanceLogs] = useState<MaintenanceLog[]>([]);
+  const [appUsers, setAppUsers] = useState<UserProfile[]>([]);
   const [repairingCamera, setRepairingCamera] = useState<{ locationId: string, camera: Camera } | null>(null);
   const [reportingCamProblem, setReportingCamProblem] = useState<{ locationId: string, camera: Camera } | null>(null);
   const [isSelectingLocForReport, setIsSelectingLocForReport] = useState(false);
@@ -206,22 +210,39 @@ export default function App() {
     const username = formData.get('username') as string;
     const password = formData.get('password') as string;
 
-    // Based on user request credentials
-    if (username === 'renato' && password === '32604509') {
-      const newUser: UserProfile = { username, role: 'admin' };
-      setUser(newUser);
-      localStorage.setItem('civa_user', JSON.stringify(newUser));
-      
-      // Try to sign in to Supabase in background for real persistence if configured
-      if (supabase) {
-        // We use a dummy email for Supabase Auth since it requires one
-        const email = `${username}@civa.com`;
-        supabase.auth.signInWithPassword({ email, password }).catch(err => {
-          console.warn("Supabase auth background attempt failed (expected if not using Auth):", err.message);
-        });
+    if (supabase) {
+      try {
+        const { data, error } = await supabase
+          .from('users')
+          .select('*')
+          .eq('username', username)
+          .eq('password', password)
+          .single();
+
+        if (error || !data) {
+          setLoginError('Usuário ou senha incorretos.');
+          return;
+        }
+
+        const newUser: UserProfile = { 
+          id: data.id,
+          username: data.username, 
+          role: data.role as 'admin' | 'viewer' 
+        };
+        setUser(newUser);
+        localStorage.setItem('civa_user', JSON.stringify(newUser));
+      } catch (err) {
+        setLoginError('Erro ao conectar ao servidor.');
       }
     } else {
-      setLoginError('Usuário ou senha incorretos.');
+      // Fallback for demo if no supabase
+      if (username === 'renato' && password === '32604509') {
+        const newUser: UserProfile = { username, role: 'admin' };
+        setUser(newUser);
+        localStorage.setItem('civa_user', JSON.stringify(newUser));
+      } else {
+        setLoginError('Supabase não configurado e falha no login local.');
+      }
     }
   };
 
@@ -261,267 +282,106 @@ export default function App() {
     document.body.removeChild(link);
   };
 
-  const handleManualSync = async () => {
-    if (!supabase) {
-      alert('Configuração do Supabase (URL/Key) não encontrada nos Secrets.');
-      return;
-    }
+
+  // Real-time Subscriptions
+  useEffect(() => {
+    if (!user || !supabase) return;
+
+    const channels = [
+      supabase.channel('public:secretariats')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'secretariats' }, payload => {
+          loadData();
+        }).subscribe(),
+      supabase.channel('public:locations')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'locations' }, payload => {
+          loadData();
+        }).subscribe(),
+      supabase.channel('public:maintenance_logs')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'maintenance_logs' }, payload => {
+          loadData();
+        }).subscribe(),
+      supabase.channel('public:users')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'users' }, payload => {
+          loadData();
+        }).subscribe()
+    ];
+
+    return () => {
+      channels.forEach(channel => supabase.removeChannel(channel));
+    };
+  }, [user]);
+
+  const loadData = async () => {
+    if (!supabase) return;
     setSyncStatus('syncing');
     setSyncErrorMessage(null);
-    
+
     try {
-      // Tenta primeiro empurrar o estado local para garantir que a nuvem tenha os dados mais recentes
-      // E serve como teste de conexão/esquema
-      await saveState(secretariats, locations, maintenanceLogs);
+      const [secRes, locRes, logRes, userRes] = await Promise.all([
+        supabase.from('secretariats').select('*').order('name'),
+        supabase.from('locations').select('*').order('name'),
+        supabase.from('maintenance_logs').select('*').order('timestamp', { ascending: false }),
+        supabase.from('users').select('*').order('username')
+      ]);
+
+      const errors = [];
+      if (secRes.error) errors.push(`Secretarias: ${secRes.error.message}`);
+      if (locRes.error) errors.push(`Locais: ${locRes.error.message}`);
+      if (logRes.error) errors.push(`Histórico: ${logRes.error.message}`);
+      if (userRes.error) errors.push(`Usuários: ${userRes.error.message}`);
+
+      if (errors.length > 0) {
+        setSyncStatus('error');
+        setSyncErrorMessage(errors.join(' | '));
+        return;
+      }
+
+      if (secRes.data) {
+        const mapped = secRes.data.map((s: any) => ({ id: s.id, name: s.name, icon: s.icon }));
+        setSecretariats(mapped);
+      }
+      if (locRes.data) {
+        const mapped = locRes.data.map((l: any) => ({
+          id: l.id,
+          name: l.name,
+          ip: l.ip || '',
+          server: l.server || '',
+          secretariatId: l.secretariat_id,
+          subSecretariat: l.sub_secretariat || '',
+          cameras: l.cameras || [],
+          mapsLink: l.maps_link || ''
+        }));
+        setLocations(mapped);
+      }
+      if (logRes.data) {
+        const mapped = logRes.data.map((l: any) => ({
+          id: l.id,
+          cameraId: l.camera_id,
+          locationId: l.location_id,
+          timestamp: l.timestamp,
+          dataConserto: l.data_conserto,
+          descricaoTecnica: l.descricao_tecnica,
+          ipLocal: l.ip_local || '',
+          servidor: l.servidor || ''
+        }));
+        setMaintenanceLogs(mapped);
+      }
+      if (userRes.data) {
+        setAppUsers(userRes.data);
+      }
+      setSyncStatus('synced');
     } catch (err: any) {
-      console.error('Manual sync failed:', err);
+      console.error('Realtime load error:', err);
       setSyncStatus('error');
-      setSyncErrorMessage(err.message || 'Falha na sincronização.');
+      setSyncErrorMessage(err.message || 'Erro de conexão.');
     }
   };
 
   // Persist state to localStorage and Supabase
   useEffect(() => {
     if (!user) return;
-    const loadData = async () => {
-      setSyncStatus('syncing');
-      // 1. Load from localStorage first (for immediate feedback)
-      const savedSecs = localStorage.getItem('civa_secretariats');
-      const savedLocations = localStorage.getItem('civa_locations');
-      const savedLogs = localStorage.getItem('civa_logs');
-      
-      let finalSecs = initialSecretariats;
-      let finalLocs = initialLocations;
-      let finalLogs: MaintenanceLog[] = [];
-
-      if (savedSecs) {
-        const parsed = JSON.parse(savedSecs);
-        const existingIds = new Set(parsed.map((s: any) => s.id));
-        const missing = initialSecretariats.filter(s => !existingIds.has(s.id));
-        finalSecs = [...parsed, ...missing];
-      }
-      
-      if (savedLocations) {
-        const parsed = JSON.parse(savedLocations);
-        const parsedMap = new Map(parsed.map((l: any) => [l.id, l]));
-        const initialIds = new Set(initialLocations.map(l => l.id));
-        
-        finalLocs = initialLocations.map(initialLoc => {
-          const savedLoc = parsedMap.get(initialLoc.id) as Location | undefined;
-          if (!savedLoc) return initialLoc;
-          return {
-            ...initialLoc,
-            ...savedLoc,
-            cameras: savedLoc.cameras
-          };
-        });
-
-        const userAdded = parsed.filter((l: any) => 
-          !initialIds.has(l.id) && 
-          !l.id.startsWith('e-') && 
-          !l.id.startsWith('s-') && 
-          !l.id.startsWith('a-') && 
-          !l.id.startsWith('t-') &&
-          !/^[esat]\d+$/.test(l.id)
-        );
-        
-        finalLocs = [...finalLocs, ...userAdded];
-      }
-
-      if (savedLogs) finalLogs = JSON.parse(savedLogs);
-
-      setSecretariats(finalSecs);
-      setLocations(finalLocs);
-      setMaintenanceLogs(finalLogs);
-
-      // 2. Try to sync from Supabase if configured
-      if (supabase) {
-        try {
-          const [secRes, locRes, logRes] = await Promise.all([
-            supabase.from('Secretariats').select('*'),
-            supabase.from('Locations').select('*'),
-            supabase.from('Maintenance_logs').select('*')
-          ]);
-
-          if (secRes.error) {
-            if (secRes.error.code === '42P01') throw new Error("A tabela 'Secretariats' não existe. Rode o SQL.");
-            throw new Error(`Erro na tabela 'Secretariats': ${secRes.error.message}`);
-          }
-          if (locRes.error) {
-            if (locRes.error.code === '42P01') throw new Error("A tabela 'Locations' não existe. Rode o SQL.");
-            throw new Error(`Erro na tabela 'Locations': ${locRes.error.message}`);
-          }
-          if (logRes.error) {
-            if (logRes.error.code === '42P01') throw new Error("A tabela 'Maintenance_logs' não existe. Rode o SQL.");
-            throw new Error(`Erro na tabela 'Maintenance_logs': ${logRes.error.message}`);
-          }
-
-          let hasCloudData = false;
-
-          // Process Secretariats
-          if (secRes.data && secRes.data.length > 0) {
-            const mappedSecs = secRes.data.map((s: any) => ({ 
-              id: s.id, 
-              name: s.name || s.Name || '', 
-              icon: s.icon || 'building' 
-            }));
-            setSecretariats(mappedSecs);
-            localStorage.setItem('civa_secretariats', JSON.stringify(mappedSecs));
-            hasCloudData = true;
-          }
-
-          // Process Locations (mapping snake_case to camelCase)
-          if (locRes.data && locRes.data.length > 0) {
-            const mappedLocs = locRes.data.map((l: any) => ({
-              id: l.id,
-              name: l.name || l.Name || '',
-              ip: l.ip || '',
-              server: l.server || '',
-              secretariatId: l.secretariat_id,
-              subSecretariat: l.sub_secretariat || '',
-              cameras: l.cameras || [],
-              mapsLink: l.maps_link || ''
-            }));
-            setLocations(mappedLocs);
-            localStorage.setItem('civa_locations', JSON.stringify(mappedLocs));
-            hasCloudData = true;
-          }
-
-          // Process Logs (mapping snake_case to camelCase)
-          if (logRes.data && logRes.data.length > 0) {
-            const mappedLogs = logRes.data.map((l: any) => ({
-              id: l.id,
-              cameraId: l.camera_id || 'GERAL',
-              locationId: l.location_id,
-              timestamp: l.timestamp,
-              dataConserto: l.data_conserto || '',
-              descricaoTecnica: l.descricao_tecnica || '',
-              ipLocal: l.ip_local || '',
-              servidor: l.servidor || ''
-            }));
-            setMaintenanceLogs(mappedLogs);
-            localStorage.setItem('civa_logs', JSON.stringify(mappedLogs));
-            hasCloudData = true;
-          }
-
-          // Force push local data to cloud on first load if cloud was empty
-          if (!hasCloudData && (finalSecs.length > 0 || finalLocs.length > 0)) {
-            console.log("Supabase empty, pushing local data...");
-            await saveState(finalSecs, finalLocs, finalLogs);
-          } else {
-            setSyncStatus('synced');
-            setSyncErrorMessage(null);
-          }
-        } catch (err: any) {
-          console.error('Error fetching from Supabase:', err);
-          setSyncStatus('error');
-          if (err.message?.includes('not found') || err.message?.includes('Invalid path') || err.code === 'PGRST301' || err.code === '42P01') {
-            setSyncErrorMessage('Erro: Tabelas não encontradas. Verifique se a URL/Key nos Secrets são do projeto atual e se o SQL foi rodado no Supabase.');
-          } else {
-            setSyncErrorMessage(err.message || 'Falha ao conectar com o banco.');
-          }
-        }
-      } else {
-        setSyncStatus('idle');
-      }
-    };
-
     loadData();
   }, [user]);
-
-  const saveState = async (newSecs: Secretariat[], newLocations: Location[], newLogs: MaintenanceLog[]) => {
-    // 1. Always Save to localStorage immediately
-    localStorage.setItem('civa_secretariats', JSON.stringify(newSecs));
-    localStorage.setItem('civa_locations', JSON.stringify(newLocations));
-    localStorage.setItem('civa_logs', JSON.stringify(newLogs));
-
-    // 2. Sync to Supabase in background
-    if (supabase) {
-      setSyncStatus('syncing');
-      try {
-        // Prepare data: ensure we don't send undefined values
-        const cleanSecs = newSecs.map(s => ({ 
-          id: s.id, 
-          name: s.name, // Keep lowercase as per screenshot
-          icon: s.icon 
-        }));
-        
-        const cleanLocs = newLocations.map(l => ({
-          id: l.id,
-          name: l.name, // Will be mapped to 'name' or 'Name' below
-          ip: l.ip || null,
-          server: l.server || null,
-          secretariat_id: l.secretariatId,
-          sub_secretariat: l.subSecretariat || null,
-          cameras: l.cameras || [], 
-          maps_link: l.mapsLink || null
-        }));
-
-        // Adjust for potential 'Name' capitalization in Supabase
-        const payloadLocs = cleanLocs.map(l => {
-          const { name, ...rest } = l;
-          return { ...rest, Name: name }; // Force Name capitalized as per user screenshot
-        });
-
-        const cleanLogs = newLogs.map(l => ({
-          id: l.id,
-          camera_id: l.cameraId,
-          location_id: l.locationId,
-          timestamp: l.timestamp,
-          data_conserto: l.dataConserto || 'PENDENTE',
-          descricao_tecnica: l.descricaoTecnica || '',
-          ip_local: l.ipLocal || null,
-          servidor: l.servidor || null
-        }));
-
-        // Use sequential upserts to handle foreign key dependencies (Secs -> Locs -> Logs)
-        const results = [];
-        
-        const r1 = await supabase.from('Secretariats').upsert(cleanSecs, { onConflict: 'id' });
-        results.push({ table: 'Secretariats', res: r1 });
-        
-        const r2 = await supabase.from('Locations').upsert(payloadLocs, { onConflict: 'id' });
-        results.push({ table: 'Locations', res: r2 });
-        
-        const r3 = await supabase.from('Maintenance_logs').upsert(cleanLogs, { onConflict: 'id' });
-        results.push({ table: 'Maintenance_logs', res: r3 });
-        
-        let hasError = false;
-        let errorMessage = "";
-        
-        results.forEach(({ table, res }) => {
-          if (res.error) {
-            console.error(`Supabase Error (${table}):`, res.error);
-            hasError = true;
-            // Detailed error mapping
-            if (res.error.code === '42P01') {
-              errorMessage = `Tabela "${table}" não encontrada. Verifique se você rodou o Script SQL no editor do Supabase.`;
-            } else if (res.error.code === '42703') {
-              errorMessage = `Erro de Coluna na tabela "${table}". Verifique se o SQL está atualizado.`;
-            } else if (res.error.code === '23503') {
-              errorMessage = `Erro de vínculo: A unidade de ${table === 'locations' ? 'Secretaria' : 'Local'} não existe.`;
-            } else if (res.error.code === '42501') {
-              errorMessage = `Permissão negada (RLS). Habilite o acesso para todos na tabela "${table}".`;
-            } else {
-              errorMessage = `Erro (${table}): ${res.error.message}`;
-            }
-          }
-        });
-
-        if (hasError) {
-          setSyncStatus('error');
-          setSyncErrorMessage(errorMessage);
-        } else {
-          setSyncStatus('synced');
-          setSyncErrorMessage(null);
-        }
-      } catch (err) {
-        console.error('Erro crítico na sincronização:', err);
-        setSyncStatus('error');
-        setSyncErrorMessage("Erro interno no aplicativo.");
-      }
-    }
-  };
 
   // Stats
   const stats = useMemo(() => {
@@ -603,192 +463,182 @@ export default function App() {
     setSelectedLocation(null);
     setSelectedSecretariat(null);
   };
-  const toggleCameraStatus = (locationId: string, cameraId: string) => {
-    const newLocations = locations.map(loc => {
-      if (loc.id === locationId) {
-        return {
-          ...loc,
-          cameras: loc.cameras.map(cam => {
-            if (cam.id === cameraId) {
-              const newStatus = cam.status === CameraStatus.ONLINE ? CameraStatus.ERROR : CameraStatus.ONLINE;
-              return { ...cam, status: newStatus };
-            }
-            return cam;
-          })
-        };
+  const toggleCameraStatus = async (locationId: string, cameraId: string) => {
+    const loc = locations.find(l => l.id === locationId);
+    if (!loc || !supabase) return;
+
+    const updatedCameras = loc.cameras.map(cam => {
+      if (cam.id === cameraId) {
+        const newStatus = cam.status === CameraStatus.ONLINE ? CameraStatus.ERROR : CameraStatus.ONLINE;
+        return { ...cam, status: newStatus };
       }
-      return loc;
+      return cam;
     });
-    setLocations(newLocations);
-    if (selectedLocation?.id === locationId) {
-      setSelectedLocation(newLocations.find(l => l.id === locationId) || null);
+
+    const { error } = await supabase
+      .from('locations')
+      .update({ cameras: updatedCameras })
+      .eq('id', locationId);
+
+    if (error) {
+      alert(`Erro ao atualizar status: ${error.message}`);
     }
-    saveState(secretariats, newLocations, maintenanceLogs);
   };
 
-  const handleReportCameraProblem = (locationId: string, cameraId: string, reason: string) => {
+  const handleReportCameraProblem = async (locationId: string, cameraId: string, reason: string) => {
     const loc = locations.find(l => l.id === locationId);
-    const cam = loc?.cameras.find(c => c.id === cameraId);
-    if (!loc || !cam) return;
+    if (!loc || !supabase) return;
 
-    const newLog: MaintenanceLog = {
+    const cam = loc.cameras.find(c => c.id === cameraId);
+    if (!cam) return;
+
+    const newLog = {
       id: `log-${Date.now()}`,
-      cameraId: cam.id,
-      locationId: loc.id,
+      camera_id: cam.id,
+      location_id: loc.id,
       timestamp: new Date().toISOString(),
-      dataConserto: 'PENDENTE',
-      descricaoTecnica: `FALHA REPORTADA: ${reason.toUpperCase()}`,
-      ipLocal: loc.ip,
+      data_conserto: 'PENDENTE',
+      descricao_tecnica: `FALHA REPORTADA: ${reason.toUpperCase()}`,
+      ip_local: loc.ip,
       servidor: loc.server
     };
 
-    const newLocs = locations.map(l => {
-      if (l.id === locationId) {
-        return {
-          ...l,
-          cameras: l.cameras.map(c => {
-            if (c.id === cameraId) return { ...c, status: CameraStatus.ERROR };
-            return c;
-          })
-        };
-      }
-      return l;
+    const updatedCameras = loc.cameras.map(c => {
+      if (c.id === cameraId) return { ...c, status: CameraStatus.ERROR };
+      return c;
     });
 
-    const updatedLogs = [newLog, ...maintenanceLogs];
-    setMaintenanceLogs(updatedLogs);
-    setLocations(newLocs);
-    if (selectedLocation?.id === locationId) {
-      setSelectedLocation(newLocs.find(l => l.id === locationId) || null);
+    setSyncStatus('syncing');
+    const [logRes, locRes] = await Promise.all([
+      supabase.from('maintenance_logs').insert(newLog),
+      supabase.from('locations').update({ cameras: updatedCameras }).eq('id', locationId)
+    ]);
+
+    if (logRes.error || locRes.error) {
+      setSyncStatus('error');
+      alert('Erro ao registrar falha.');
     }
-    saveState(secretariats, newLocs, updatedLogs);
     setReportingCamProblem(null);
   };
 
   // CRUD Functions
-  const executeDelete = () => {
-    if (!deletingItem) return;
+  const executeDelete = async () => {
+    if (!deletingItem || !supabase) return;
+
+    setSyncStatus('syncing');
+    let error;
 
     if (deletingItem.type === 'sec') {
-      const newSecs = secretariats.filter(s => s.id !== deletingItem.id);
-      setSecretariats(newSecs);
-      saveState(newSecs, locations, maintenanceLogs);
-      if (selectedSecretariat?.id === deletingItem.id) {
+      const res = await supabase.from('secretariats').delete().eq('id', deletingItem.id);
+      error = res.error;
+      if (!error && selectedSecretariat?.id === deletingItem.id) {
         setCurrentView('dashboard');
         setSelectedSecretariat(null);
       }
     } else if (deletingItem.type === 'loc') {
-      const newLocs = locations.filter(l => l.id !== deletingItem.id);
-      setLocations(newLocs);
-      saveState(secretariats, newLocs, maintenanceLogs);
-      if (selectedLocation?.id === deletingItem.id) {
-        setCurrentView('locations');
+      const res = await supabase.from('locations').delete().eq('id', deletingItem.id);
+      error = res.error;
+      if (!error && selectedLocation?.id === deletingItem.id) {
+        setCurrentView('dashboard');
         setSelectedLocation(null);
       }
     } else if (deletingItem.type === 'cam') {
       const locationId = deletingItem.extraId!;
       const cameraId = deletingItem.id;
-      const newLocs = locations.map(loc => {
-        if (loc.id === locationId) {
-          return { ...loc, cameras: loc.cameras.filter(c => c.id !== cameraId) };
-        }
-        return loc;
-      });
-      setLocations(newLocs);
-      if (selectedLocation?.id === locationId) {
-        setSelectedLocation(newLocs.find(l => l.id === locationId) || null);
+      const loc = locations.find(l => l.id === locationId);
+      if (loc) {
+        const updatedCameras = loc.cameras.filter(c => c.id !== cameraId);
+        const res = await supabase.from('locations').update({ cameras: updatedCameras }).eq('id', locationId);
+        error = res.error;
       }
-      saveState(secretariats, newLocs, maintenanceLogs);
     }
 
-    setReportingLocProblem(null);
+    if (error) {
+      setSyncStatus('error');
+      alert(`Erro ao excluir: ${error.message}`);
+    }
     setDeletingItem(null);
   };
 
-  const handleReportGeneralProblem = (locationId: string, problemType: string) => {
+  const handleReportGeneralProblem = async (locationId: string, problemType: string) => {
     const loc = locations.find(l => l.id === locationId);
-    if (!loc) return;
+    if (!loc || !supabase) return;
 
-    // Update cameras to error status
-    const newLocs = locations.map(l => {
-      if (l.id === locationId) {
-        return {
-          ...l,
-          cameras: l.cameras.map(c => ({ ...c, status: CameraStatus.ERROR }))
-        };
-      }
-      return l;
-    });
-
-    // Create a generic log entry if possible, or for all cameras
-    const newLogs: MaintenanceLog[] = loc.cameras.map(cam => ({
+    const updatedCameras = loc.cameras.map(c => ({ ...c, status: CameraStatus.ERROR }));
+    const newLogs = loc.cameras.map(cam => ({
       id: `log-${Math.random().toString(36).substr(2, 9)}`,
-      cameraId: cam.id,
-      locationId: loc.id,
+      camera_id: cam.id,
+      location_id: loc.id,
       timestamp: new Date().toISOString(),
-      dataConserto: 'PENDENTE',
-      descricaoTecnica: `PROBLEMA GERAL: ${problemType.toUpperCase()}`,
-      ipLocal: loc.ip,
+      data_conserto: 'PENDENTE',
+      descricao_tecnica: `PROBLEMA GERAL: ${problemType.toUpperCase()}`,
+      ip_local: loc.ip,
       servidor: loc.server
     }));
 
-    const updatedLogs = [...maintenanceLogs, ...newLogs];
-    setMaintenanceLogs(updatedLogs);
-    setLocations(newLocs);
-    if (selectedLocation?.id === locationId) {
-      setSelectedLocation(newLocs.find(l => l.id === locationId) || null);
+    setSyncStatus('syncing');
+    const [logRes, locRes] = await Promise.all([
+      supabase.from('maintenance_logs').insert(newLogs),
+      supabase.from('locations').update({ cameras: updatedCameras }).eq('id', locationId)
+    ]);
+
+    if (logRes.error || locRes.error) {
+      setSyncStatus('error');
+      alert('Erro ao registrar problema geral.');
     }
-    saveState(secretariats, newLocs, updatedLogs);
     setReportingLocProblem(null);
   };
 
-  const addCamera = (locationId: string) => {
-    const newLocs = locations.map(loc => {
-      if (loc.id === locationId) {
-        const nextNumber = loc.cameras.length > 0 
-          ? Math.max(...loc.cameras.map(c => c.number)) + 1 
-          : 1;
-        const newCamera: Camera = {
-          id: `cam-${Math.random().toString(36).substr(2, 9)}`,
-          number: nextNumber,
-          status: CameraStatus.ONLINE
-        };
-        return { ...loc, cameras: [...loc.cameras, newCamera] };
-      }
-      return loc;
-    });
-    setLocations(newLocs);
-    if (selectedLocation?.id === locationId) {
-      setSelectedLocation(newLocs.find(l => l.id === locationId) || null);
-    }
-    saveState(secretariats, newLocs, maintenanceLogs);
+  const addCamera = async (locationId: string) => {
+    const loc = locations.find(l => l.id === locationId);
+    if (!loc || !supabase) return;
+
+    const nextNumber = loc.cameras.length > 0 
+      ? Math.max(...loc.cameras.map(c => c.number)) + 1 
+      : 1;
+    
+    const newCamera: Camera = {
+      id: `cam-${Math.random().toString(36).substr(2, 9)}`,
+      number: nextNumber,
+      status: CameraStatus.ONLINE
+    };
+
+    const updatedCameras = [...loc.cameras, newCamera];
+    const { error } = await supabase.from('locations').update({ cameras: updatedCameras }).eq('id', locationId);
+    
+    if (error) alert(`Erro ao adicionar câmera: ${error.message}`);
   };
 
-  const handleSecSubmit = (e: React.FormEvent<HTMLFormElement>) => {
+  const handleSecSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+    if (!supabase) return;
+
     const formData = new FormData(e.currentTarget);
     const name = formData.get('name') as string;
     const icon = formData.get('icon') as string;
 
-    let newSecs;
-    if (isEditingSec) {
-      newSecs = secretariats.map(s => s.id === isEditingSec.id ? { ...s, name, icon } : s);
+    const payload = {
+      id: isEditingSec ? isEditingSec.id : `sec-${Date.now()}`,
+      name,
+      icon
+    };
+
+    setSyncStatus('syncing');
+    const { error } = await supabase.from('secretariats').upsert(payload);
+    
+    if (error) {
+      setSyncStatus('error');
+      alert(`Erro ao salvar secretaria: ${error.message}`);
     } else {
-      const newSec: Secretariat = {
-        id: `sec-${Date.now()}`,
-        name,
-        icon
-      };
-      newSecs = [...secretariats, newSec];
+      setIsEditingSec(null);
+      setIsAddingSec(false);
     }
-    setSecretariats(newSecs);
-    saveState(newSecs, locations, maintenanceLogs);
-    setIsEditingSec(null);
-    setIsAddingSec(false);
   };
 
   const handleLocSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+    if (!supabase) return;
+
     const formData = new FormData(e.currentTarget);
     const name = formData.get('name') as string;
     const ip = formData.get('ip') as string;
@@ -798,121 +648,142 @@ export default function App() {
 
     if (inputMode === 'coords') {
       const coords = formData.get('coords') as string;
-      if (coords) {
-        mapsLink = coords;
-      }
+      if (coords) mapsLink = coords;
     }
 
-    // Expand short links if needed
-    if (mapsLink && (mapsLink.includes('maps.app.goo.gl') || mapsLink.includes('goo.gl/maps'))) {
-      try {
-        const resp = await fetch(`/api/expand-link?url=${encodeURIComponent(mapsLink)}`);
-        const data = await resp.json();
-        if (data.finalUrl) {
-          mapsLink = data.finalUrl;
-        }
-      } catch (err) {
-        console.error("Error expanding link:", err);
-      }
-    }
-
-    let newLocs;
-    if (isEditingLoc) {
-      newLocs = locations.map(l => l.id === isEditingLoc.id ? { ...l, name, ip, server, subSecretariat, mapsLink } : l);
-    } else if (selectedSecretariat) {
-      const newLoc: Location = {
-        id: `loc-${Date.now()}`,
-        name,
-        ip,
-        server,
-        secretariatId: selectedSecretariat.id,
-        subSecretariat: subSecretariat || undefined,
-        cameras: [],
-        mapsLink: mapsLink || undefined
-      };
-      newLocs = [...locations, newLoc];
-    } else {
-      return;
-    }
-    setLocations(newLocs);
-    saveState(secretariats, newLocs, maintenanceLogs);
-    setIsEditingLoc(null);
-    setIsAddingLoc(false);
-  };
-
-  const handleMaintenanceSubmit = (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    if (!repairingCamera) return;
-
-    const formData = new FormData(e.currentTarget);
-    const newLog: MaintenanceLog = {
-      id: `log-${Date.now()}`,
-      cameraId: repairingCamera.camera.id,
-      locationId: repairingCamera.locationId,
-      timestamp: new Date().toISOString(),
-      dataConserto: formData.get('dataConserto') as string,
-      descricaoTecnica: formData.get('descricaoTecnica') as string,
-      ipLocal: selectedLocation?.ip || '',
-      servidor: selectedLocation?.server || '',
+    const payload = {
+      id: isEditingLoc ? isEditingLoc.id : `loc-${Date.now()}`,
+      name,
+      ip,
+      server,
+      secretariat_id: isEditingLoc ? isEditingLoc.secretariatId : selectedSecretariat?.id,
+      sub_secretariat: subSecretariat || null,
+      maps_link: mapsLink || null,
+      cameras: isEditingLoc ? isEditingLoc.cameras : []
     };
 
-    const newLogs = [newLog, ...maintenanceLogs];
-    const newLocations = locations.map(loc => {
-      if (loc.id === repairingCamera.locationId) {
-        return {
-          ...loc,
-          cameras: loc.cameras.map(cam => {
-            if (cam.id === repairingCamera.camera.id) {
-              return { ...cam, status: CameraStatus.ONLINE, lastMaintenance: newLog.timestamp };
-            }
-            return cam;
-          })
-        };
-      }
-      return loc;
-    });
+    setSyncStatus('syncing');
+    const { error } = await supabase.from('locations').upsert(payload);
 
-    setMaintenanceLogs(newLogs);
-    setLocations(newLocations);
-    if (selectedLocation?.id === repairingCamera.locationId) {
-      setSelectedLocation(newLocations.find(l => l.id === repairingCamera.locationId) || null);
+    if (error) {
+      setSyncStatus('error');
+      alert(`Erro ao salvar local: ${error.message}`);
+    } else {
+      setIsEditingLoc(null);
+      setIsAddingLoc(false);
     }
-    saveState(secretariats, newLocations, newLogs);
-    setRepairingCamera(null);
   };
 
-  const handleRepairLocationGeneral = (locationId: string) => {
-    const loc = locations.find(l => l.id === locationId);
-    if (!loc) return;
+  const handleMaintenanceSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (!repairingCamera || !supabase || !selectedLocation) return;
 
-    const newLog: MaintenanceLog = {
+    const formData = new FormData(e.currentTarget);
+    const timestamp = new Date().toISOString();
+    
+    const newLog = {
       id: `log-${Date.now()}`,
-      cameraId: 'GERAL',
-      locationId: loc.id,
-      timestamp: new Date().toISOString(),
-      dataConserto: new Date().toISOString().split('T')[0],
-      descricaoTecnica: 'REPARO GERAL REALIZADO: COMUNICAÇÃO RESTABELECIDA',
-      ipLocal: loc.ip,
+      camera_id: repairingCamera.camera.id,
+      location_id: repairingCamera.locationId,
+      timestamp,
+      data_conserto: formData.get('dataConserto') as string,
+      descricao_tecnica: formData.get('descricaoTecnica') as string,
+      ip_local: selectedLocation.ip,
+      servidor: selectedLocation.server
+    };
+
+    const updatedCameras = selectedLocation.cameras.map(cam => {
+      if (cam.id === repairingCamera.camera.id) {
+        return { ...cam, status: CameraStatus.ONLINE, lastMaintenance: timestamp };
+      }
+      return cam;
+    });
+
+    setSyncStatus('syncing');
+    const [logRes, locRes] = await Promise.all([
+      supabase.from('maintenance_logs').insert(newLog),
+      supabase.from('locations').update({ cameras: updatedCameras }).eq('id', selectedLocation.id)
+    ]);
+
+    if (logRes.error || locRes.error) {
+      setSyncStatus('error');
+      alert('Erro ao concluir reparo.');
+    } else {
+      setRepairingCamera(null);
+    }
+  };
+
+  const handleRepairLocationGeneral = async (locationId: string) => {
+    const loc = locations.find(l => l.id === locationId);
+    if (!loc || !supabase) return;
+
+    const timestamp = new Date().toISOString();
+    const newLog = {
+      id: `log-${Date.now()}`,
+      camera_id: 'GERAL',
+      location_id: loc.id,
+      timestamp,
+      data_conserto: new Date().toISOString().split('T')[0],
+      descricao_tecnica: 'REPARO GERAL REALIZADO: COMUNICAÇÃO RESTABELECIDA',
+      ip_local: loc.ip,
       servidor: loc.server,
     };
 
-    const newLogs = [newLog, ...maintenanceLogs];
-    const newLocations = locations.map(l => {
-      if (l.id === locationId) {
-        return {
-          ...l,
-          cameras: l.cameras.map(cam => ({ ...cam, status: CameraStatus.ONLINE, lastMaintenance: newLog.timestamp }))
-        };
-      }
-      return l;
+    const updatedCameras = loc.cameras.map(cam => ({ 
+      ...cam, 
+      status: CameraStatus.ONLINE, 
+      lastMaintenance: timestamp 
+    }));
+
+    setSyncStatus('syncing');
+    const [logRes, locRes] = await Promise.all([
+      supabase.from('maintenance_logs').insert(newLog),
+      supabase.from('locations').update({ cameras: updatedCameras }).eq('id', locationId)
+    ]);
+
+    if (logRes.error || locRes.error) {
+      setSyncStatus('error');
+      alert('Erro ao realizar reparo geral.');
+    }
+  };
+
+  const handleUserSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (!supabase) return;
+
+    const formData = new FormData(e.currentTarget);
+    const username = formData.get('username') as string;
+    const password = formData.get('password') as string;
+    const role = formData.get('role') as string;
+
+    setSyncStatus('syncing');
+    setSyncErrorMessage(null);
+    const { error } = await supabase.from('users').insert({
+      username,
+      password,
+      role
     });
 
-    setMaintenanceLogs(newLogs);
-    setLocations(newLocations);
-    if (selectedLocation?.id === locationId) {
-      setSelectedLocation(newLocations.find(l => l.id === locationId) || null);
+    if (error) {
+      setSyncStatus('error');
+      setSyncErrorMessage(`Erro ao criar usuário: ${error.message}`);
+      alert(`Erro ao criar usuário: ${error.message}`);
+    } else {
+      (e.target as HTMLFormElement).reset();
+      loadData();
     }
-    saveState(secretariats, newLocations, newLogs);
+  };
+
+  const deleteUser = async (userId: string) => {
+    if (!supabase) return;
+    if (confirm('Deseja realmente excluir este usuário?')) {
+      const { error } = await supabase.from('users').delete().eq('id', userId);
+      if (error) {
+        alert(`Erro ao excluir: ${error.message}`);
+      } else {
+        loadData();
+      }
+    }
   };
 
   const handleFixAllLinks = async () => {
@@ -956,8 +827,22 @@ export default function App() {
     });
 
     if (changed) {
-      setLocations(newLocs);
-      saveState(secretariats, newLocs, maintenanceLogs);
+      const updates = newLocs
+        .filter(l => results.some(r => r && r.id === l.id))
+        .map(l => ({
+          id: l.id,
+          name: l.name,
+          ip: l.ip,
+          server: l.server,
+          secretariat_id: l.secretariatId,
+          sub_secretariat: l.subSecretariat,
+          maps_link: l.mapsLink,
+          cameras: l.cameras
+        }));
+
+      if (supabase) {
+        await supabase.from('locations').upsert(updates);
+      }
       alert('Processamento concluído! Verifique o mapa para ver as atualizações.');
     } else {
       alert('Todos os links já estão processados ou não foram encontradas novas coordenadas.');
@@ -1011,8 +896,22 @@ export default function App() {
       });
 
       if (changed) {
-        setLocations(newLocs);
-        saveState(secretariats, newLocs, maintenanceLogs);
+        const updates = newLocs
+          .filter(l => results.some(r => r && r.id === l.id))
+          .map(l => ({
+            id: l.id,
+            name: l.name,
+            ip: l.ip,
+            server: l.server,
+            secretariat_id: l.secretariatId,
+            sub_secretariat: l.subSecretariat,
+            maps_link: l.mapsLink,
+            cameras: l.cameras
+          }));
+
+        if (supabase) {
+          await supabase.from('locations').upsert(updates);
+        }
       }
       setIsExpandingLinks(false);
     };
@@ -1159,7 +1058,7 @@ export default function App() {
             <nav className="hidden md:flex items-center gap-4">
               {/* Sync Status Icon & Manual Sync */}
               <button 
-                onClick={handleManualSync}
+                onClick={loadData}
                 disabled={syncStatus === 'syncing'}
                 className={`flex items-center gap-2 px-2 py-1 rounded-lg border transition-all hover:scale-105 active:scale-95 ${
                   syncStatus === 'syncing' ? 'bg-blue-800/50 border-blue-700' : 
@@ -1207,12 +1106,20 @@ export default function App() {
               >
                 <AlertTriangle className="w-3.5 h-3.5" /> Relatórios
               </button>
+              {user?.role === 'admin' && (
+                <button 
+                  onClick={() => setCurrentView('users')}
+                  className={`flex items-center gap-2 px-3 py-1 rounded-lg text-xs font-bold transition-all ${currentView === 'users' ? 'bg-blue-800 text-white' : 'text-blue-300 hover:bg-blue-800'}`}
+                >
+                  <Users className="w-3.5 h-3.5" /> Usuários
+                </button>
+              )}
             </nav>
             <div className="h-8 w-px bg-blue-800"></div>
             <div className="flex items-center gap-3">
               <div className="hidden sm:block text-right">
                 <p className="text-[10px] font-black text-blue-200 uppercase tracking-tighter leading-none">{user?.username}</p>
-                <p className="text-[8px] font-bold text-blue-400 uppercase tracking-widest mt-0.5">Administrador</p>
+                <p className="text-[8px] font-bold text-blue-400 uppercase tracking-widest mt-0.5">{user?.role === 'admin' ? 'Administrador' : 'Visualizador'}</p>
               </div>
               <div className="relative group">
                 <div className="w-9 h-9 rounded-full bg-blue-700 flex items-center justify-center text-xs font-bold border border-blue-600 overflow-hidden shadow-lg group-hover:bg-blue-600 transition-colors">
@@ -1222,6 +1129,20 @@ export default function App() {
                   <div className="px-4 py-2 border-b border-slate-50">
                     <p className="text-[10px] font-black text-slate-900 uppercase">Ações do Perfil</p>
                   </div>
+                  <button 
+                    onClick={() => {
+                      if (confirm('Deseja limpar os dados locais e recarregar? Isso pode resolver problemas de sincronização.')) {
+                        localStorage.removeItem('civa_secretariats');
+                        localStorage.removeItem('civa_locations');
+                        localStorage.removeItem('civa_logs');
+                        window.location.reload();
+                      }
+                    }}
+                    className="w-full px-4 py-2 text-left hover:bg-slate-50 flex items-center gap-2 text-slate-600 transition-colors"
+                  >
+                    <RefreshCw className="w-4 h-4 text-blue-500" />
+                    <span className="text-[10px] font-black uppercase tracking-widest">Resetar Dados Locais</span>
+                  </button>
                   <button 
                     onClick={handleLogout}
                     className="w-full px-4 py-2 text-left hover:bg-slate-50 flex items-center gap-2 text-slate-600 transition-colors"
@@ -1431,12 +1352,14 @@ export default function App() {
               <section>
                 <div className="flex items-center justify-between mb-6">
                   <h2 className="text-2xl font-bold text-slate-800">Monitoramento por Secretaria</h2>
-                  <button 
-                    onClick={() => setIsAddingSec(true)}
-                    className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-xl text-xs font-bold hover:bg-blue-700 transition-all shadow-lg shadow-blue-600/20"
-                  >
-                    <Plus className="w-4 h-4" /> Nova Secretaria
-                  </button>
+                  {user?.role === 'admin' && (
+                    <button 
+                      onClick={() => setIsAddingSec(true)}
+                      className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-xl text-xs font-bold hover:bg-blue-700 transition-all shadow-lg shadow-blue-600/20"
+                    >
+                      <Plus className="w-4 h-4" /> Nova Secretaria
+                    </button>
+                  )}
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
                   {secretariats.map(sec => {
@@ -1471,23 +1394,25 @@ export default function App() {
                           </div>
                         </button>
                         
-                        <div className="absolute top-2 left-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity z-10">
-                          <button 
-                            onClick={(e) => { e.stopPropagation(); setIsEditingSec(sec); }}
-                            className="p-1.5 bg-white border border-slate-200 text-slate-400 hover:text-blue-600 rounded-lg shadow-sm transition-colors"
-                          >
-                            <Edit3 className="w-3.5 h-3.5" />
-                          </button>
-                          <button 
-                            onClick={(e) => { 
-                              e.stopPropagation(); 
-                              setDeletingItem({ type: 'sec', id: sec.id, name: sec.name }); 
-                            }}
-                            className="p-1.5 bg-white border border-slate-200 text-slate-400 hover:text-rose-600 rounded-lg shadow-sm transition-colors"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
+                        {user?.role === 'admin' && (
+                          <div className="absolute top-2 left-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity z-10">
+                            <button 
+                              onClick={(e) => { e.stopPropagation(); setIsEditingSec(sec); }}
+                              className="p-1.5 bg-white border border-slate-200 text-slate-400 hover:text-blue-600 rounded-lg shadow-sm transition-colors"
+                            >
+                              <Edit3 className="w-3.5 h-3.5" />
+                            </button>
+                            <button 
+                              onClick={(e) => { 
+                                e.stopPropagation(); 
+                                setDeletingItem({ type: 'sec', id: sec.id, name: sec.name }); 
+                              }}
+                              className="p-1.5 bg-white border border-slate-200 text-slate-400 hover:text-rose-600 rounded-lg shadow-sm transition-colors"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        )}
                       </div>
                     );
                   })}
@@ -1593,7 +1518,7 @@ export default function App() {
                     </p>
                     <div className="pt-3 flex gap-3">
                       <button 
-                        onClick={handleManualSync}
+                        onClick={loadData}
                         className="px-5 py-2 bg-rose-600 text-white rounded-xl text-xs font-black uppercase tracking-widest hover:bg-rose-700 transition-colors shadow-lg shadow-rose-600/30 flex items-center gap-2"
                       >
                        <RefreshCw className="w-3 h-3" /> Tentar Novamente
@@ -1623,24 +1548,28 @@ export default function App() {
                   <p className="text-sm font-bold text-slate-500 uppercase tracking-widest">Unidades de Atendimento</p>
                 </div>
                 <div className="ml-auto flex items-center gap-3">
-                  <button 
-                    onClick={handleFixAllLinks}
-                    disabled={isExpandingLinks}
-                    className="flex items-center gap-2 px-6 py-3 bg-emerald-100 text-emerald-700 rounded-2xl text-sm font-bold hover:bg-emerald-200 transition-all disabled:opacity-50"
-                  >
-                    {isExpandingLinks ? (
-                      <div className="w-4 h-4 border-2 border-emerald-700 border-t-transparent rounded-full animate-spin"></div>
-                    ) : (
-                      <MapPin className="w-5 h-5" />
-                    )}
-                    Mapear Links
-                  </button>
-                  <button 
-                    onClick={() => setIsAddingLoc(true)}
-                    className="flex items-center gap-2 px-6 py-3 bg-blue-600 text-white rounded-2xl text-sm font-bold hover:bg-blue-700 transition-all shadow-xl shadow-blue-600/20"
-                  >
-                    <Plus className="w-5 h-5" /> Novo Local
-                  </button>
+                  {user?.role === 'admin' && (
+                    <>
+                      <button 
+                        onClick={handleFixAllLinks}
+                        disabled={isExpandingLinks}
+                        className="flex items-center gap-2 px-6 py-3 bg-emerald-100 text-emerald-700 rounded-2xl text-sm font-bold hover:bg-emerald-200 transition-all disabled:opacity-50"
+                      >
+                        {isExpandingLinks ? (
+                          <div className="w-4 h-4 border-2 border-emerald-700 border-t-transparent rounded-full animate-spin"></div>
+                        ) : (
+                          <MapPin className="w-5 h-5" />
+                        )}
+                        Mapear Links
+                      </button>
+                      <button 
+                        onClick={() => setIsAddingLoc(true)}
+                        className="flex items-center gap-2 px-6 py-3 bg-blue-600 text-white rounded-2xl text-sm font-bold hover:bg-blue-700 transition-all shadow-xl shadow-blue-600/20"
+                      >
+                        <Plus className="w-5 h-5" /> Novo Local
+                      </button>
+                    </>
+                  )}
                 </div>
               </div>
 
@@ -1711,7 +1640,7 @@ export default function App() {
                               </a>
                             </div>
                           )}
-                          {!loc.mapsLink && (
+                          {!loc.mapsLink && user?.role === 'admin' && (
                             <button 
                               onClick={(e) => { e.stopPropagation(); setIsEditingLoc(loc); }}
                               className="flex items-center gap-2 text-[10px] font-bold text-blue-600 hover:bg-white/50 px-2 py-0.5 rounded uppercase transition-colors"
@@ -1753,23 +1682,25 @@ export default function App() {
                         </div>
                       </div>
 
-                      <div className="absolute top-4 left-4 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity z-10">
-                        <button 
-                          onClick={(e) => { e.stopPropagation(); setIsEditingLoc(loc); }}
-                          className="p-2 bg-white border border-slate-200 text-slate-400 hover:text-blue-600 rounded-xl shadow-lg transition-colors"
-                        >
-                          <Edit3 className="w-4 h-4" />
-                        </button>
-                        <button 
-                          onClick={(e) => { 
-                            e.stopPropagation(); 
-                            setDeletingItem({ type: 'loc', id: loc.id, name: loc.name }); 
-                          }}
-                          className="p-2 bg-white border border-slate-200 text-slate-400 hover:text-rose-600 rounded-xl shadow-lg transition-colors"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </div>
+                      {user?.role === 'admin' && (
+                        <div className="absolute top-4 left-4 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity z-10">
+                          <button 
+                            onClick={(e) => { e.stopPropagation(); setIsEditingLoc(loc); }}
+                            className="p-2 bg-white border border-slate-200 text-slate-400 hover:text-blue-600 rounded-xl shadow-lg transition-colors"
+                          >
+                            <Edit3 className="w-4 h-4" />
+                          </button>
+                          <button 
+                            onClick={(e) => { 
+                              e.stopPropagation(); 
+                              setDeletingItem({ type: 'loc', id: loc.id, name: loc.name }); 
+                            }}
+                            className="p-2 bg-white border border-slate-200 text-slate-400 hover:text-rose-600 rounded-xl shadow-lg transition-colors"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      )}
                     </div>
                   );
                 })}
@@ -1808,12 +1739,14 @@ export default function App() {
                   </div>
                 </div>
                 <div className="flex gap-2 h-fit">
-                   <button 
-                    onClick={() => addCamera(selectedLocation.id)}
-                    className="flex items-center gap-2 bg-blue-600 text-white px-6 py-3 rounded-2xl text-xs font-black uppercase tracking-widest shadow-xl shadow-blue-600/20 hover:bg-blue-700 transition-all"
-                  >
-                    <Plus className="w-4 h-4" /> Nova Câmera
-                  </button>
+                   {user?.role === 'admin' && (
+                     <button 
+                      onClick={() => addCamera(selectedLocation.id)}
+                      className="flex items-center gap-2 bg-blue-600 text-white px-6 py-3 rounded-2xl text-xs font-black uppercase tracking-widest shadow-xl shadow-blue-600/20 hover:bg-blue-700 transition-all"
+                    >
+                      <Plus className="w-4 h-4" /> Nova Câmera
+                    </button>
+                   )}
                    <div className="flex items-center gap-2 bg-emerald-50 text-emerald-700 px-4 py-2 rounded-xl text-xs font-bold border border-emerald-100">
                     <CheckCircle2 className="w-4 h-4" />
                     {selectedLocation.cameras.filter(c => c.status === CameraStatus.ONLINE).length} ONLINE
@@ -1835,12 +1768,14 @@ export default function App() {
                     <div className={`absolute top-0 right-0 px-3 py-1 rounded-bl-xl text-[9px] font-black uppercase tracking-widest ${cam.status === CameraStatus.ONLINE ? 'bg-emerald-500 text-white' : 'bg-rose-500 text-white animate-pulse'}`}>
                       {cam.status === CameraStatus.ONLINE ? 'ONLINE' : 'ERRO'}
                     </div>
-                    <button 
-                      onClick={() => setDeletingItem({ type: 'cam', id: cam.id, extraId: selectedLocation.id, name: `Câmera ${cam.number}` })}
-                      className="absolute top-4 right-4 p-2 text-slate-300 hover:text-rose-600 opacity-0 group-hover:opacity-100 transition-opacity"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
+                    {user?.role === 'admin' && (
+                      <button 
+                        onClick={() => setDeletingItem({ type: 'cam', id: cam.id, extraId: selectedLocation.id, name: `Câmera ${cam.number}` })}
+                        className="absolute top-4 right-4 p-2 text-slate-300 hover:text-rose-600 opacity-0 group-hover:opacity-100 transition-opacity"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    )}
                     <div className="flex items-center justify-between mb-8">
                       <div className={`p-4 rounded-2xl ${cam.status === CameraStatus.ONLINE ? 'bg-emerald-100 text-emerald-600' : 'bg-rose-600 text-white shadow-lg shadow-rose-600/40'}`}>
                         <Video className="w-6 h-6" />
@@ -2123,7 +2058,7 @@ export default function App() {
             </motion.div>
           )}
 
-          {/* History */}
+          {/* Maintenance Logs View */}
           {currentView === 'history' && searchQuery.trim() === '' && (
             <motion.div 
               key="history"
@@ -2141,9 +2076,9 @@ export default function App() {
 
               <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
                 <div className="overflow-x-auto">
-                  <table className="w-full text-left border-collapse">
+                  <table className="w-full text-left border-collapse text-sm">
                     <thead>
-                      <tr className="bg-slate-50 text-slate-500 text-[10px] uppercase font-bold tracking-widest border-b border-slate-100">
+                      <tr className="bg-slate-50 text-slate-500 text-[10px] uppercase font-black border-b border-slate-100">
                         <th className="px-6 py-4">Data/Hora</th>
                         <th className="px-6 py-4">Equipamento</th>
                         <th className="px-6 py-4">Local / Servidor</th>
@@ -2153,41 +2088,148 @@ export default function App() {
                     <tbody className="divide-y divide-slate-50">
                       {maintenanceLogs.map(log => {
                         const loc = locations.find(l => l.id === log.locationId);
-                        const cam = loc?.cameras.find(c => c.id === log.cameraId);
                         return (
                           <tr key={log.id} className="hover:bg-slate-50 transition-colors">
                             <td className="px-6 py-4">
-                              <span className="font-bold text-slate-800 text-sm">{new Date(log.timestamp).toLocaleDateString('pt-BR')}</span><br/>
-                              <span className="text-[10px] text-slate-400 font-bold">{new Date(log.timestamp).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</span>
+                              <span className="font-bold text-slate-800">{new Date(log.timestamp).toLocaleDateString()}</span><br/>
+                              <span className="text-[10px] text-slate-400 font-bold">{new Date(log.timestamp).toLocaleTimeString()}</span>
                             </td>
                             <td className="px-6 py-4">
                               <div className="flex items-center gap-2">
                                 <Video className="w-4 h-4 text-emerald-500" />
-                                <span className="font-bold text-slate-700">Câmera {cam?.number}</span>
+                                <span className="font-bold text-slate-700">Câmera {log.cameraId === 'GERAL' ? 'GERAL' : log.cameraId}</span>
                               </div>
                             </td>
                             <td className="px-6 py-4">
-                              <p className="text-sm font-semibold text-slate-800 leading-none mb-1">{loc?.name}</p>
-                              <p className="text-[10px] text-slate-500 leading-none">IP: {log.ipLocal} • SRV: {log.servidor}</p>
+                              <p className="font-bold text-slate-800 leading-none mb-1 uppercase tracking-tight">{loc?.name || 'Local Removido'}</p>
+                              <p className="text-[10px] text-slate-500 leading-none">IP: {log.ipLocal}</p>
                             </td>
                             <td className="px-6 py-4">
-                              <div className="bg-slate-100 p-2 rounded-lg text-xs text-slate-700 italic border-l-4 border-blue-500">
-                                "{log.descricaoTecnica}"
+                              <div className="bg-slate-100 p-3 rounded-xl text-xs text-slate-700 italic border-l-4 border-blue-500 max-w-md">
+                                {log.descricaoTecnica}
                               </div>
                             </td>
                           </tr>
                         );
                       })}
-                      {maintenanceLogs.length === 0 && (
-                        <tr>
-                          <td colSpan={4} className="px-6 py-24 text-center">
-                            <Info className="w-12 h-12 text-slate-200 mx-auto mb-4" />
-                            <p className="text-slate-400 font-medium italic">Nenhum registro encontrado no histórico.</p>
-                          </td>
-                        </tr>
-                      )}
                     </tbody>
                   </table>
+                </div>
+              </div>
+            </motion.div>
+          )}
+
+          {/* User Management View */}
+          {currentView === 'users' && user?.role === 'admin' && (
+            <motion.div 
+              key="users"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              className="space-y-8"
+            >
+              <div className="flex items-center justify-between">
+                <div>
+                  <h2 className="text-2xl font-black text-slate-900 tracking-tight uppercase italic flex items-center gap-3">
+                    <ShieldAlert className="w-8 h-8 text-blue-600" />
+                    Gestão de Usuários
+                  </h2>
+                  <p className="text-xs font-bold text-slate-500 uppercase tracking-widest mt-1">Controle de acesso ao sistema CIVA</p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                {/* Create User Form */}
+                <div className="lg:col-span-1 bg-white p-8 rounded-[2.5rem] border border-slate-200 shadow-xl shadow-slate-100 h-fit">
+                   <h3 className="text-sm font-black text-slate-800 uppercase tracking-widest mb-6 flex items-center gap-2">
+                    <Plus className="w-4 h-4 text-blue-600" /> Criar Novo Usuário
+                   </h3>
+                   <form onSubmit={handleUserSubmit} className="space-y-4">
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Usuário</label>
+                        <div className="relative">
+                          <UserIcon className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                          <input 
+                            name="username" 
+                            required 
+                            placeholder="Nome de login"
+                            className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none text-sm font-bold"
+                          />
+                        </div>
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Senha</label>
+                        <div className="relative">
+                          <Lock className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                          <input 
+                            name="password" 
+                            type="password"
+                            required 
+                            placeholder="••••••••"
+                            className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none text-sm font-bold"
+                          />
+                        </div>
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Nível de Acesso</label>
+                        <div className="relative">
+                          <ShieldCheck className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                          <select 
+                            name="role" 
+                            className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none text-sm font-bold appearance-none"
+                          >
+                            <option value="viewer">Visualizador (Leitura)</option>
+                            <option value="admin">Administrador (Total)</option>
+                          </select>
+                        </div>
+                      </div>
+                      <button 
+                        type="submit"
+                        className="w-full py-4 bg-blue-600 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-lg shadow-blue-600/20 hover:bg-blue-700 transition-all active:scale-[0.98]"
+                      >
+                        Cadastrar Usuário
+                      </button>
+                   </form>
+                </div>
+
+                {/* Users List */}
+                <div className="lg:col-span-2 bg-white rounded-[2.5rem] border border-slate-200 shadow-xl shadow-slate-100 overflow-hidden">
+                  <div className="p-8 border-b border-slate-100 flex items-center justify-between">
+                    <h3 className="text-sm font-black text-slate-800 uppercase tracking-widest">Usuários Cadastrados</h3>
+                    <div className="bg-blue-50 px-3 py-1 rounded-full text-[10px] font-black text-blue-600">
+                      {appUsers.length} USUÁRIOS
+                    </div>
+                  </div>
+                  <div className="divide-y divide-slate-100">
+                    {appUsers.map(u => (
+                      <div key={u.id} className="p-6 flex items-center justify-between hover:bg-slate-50 transition-colors">
+                        <div className="flex items-center gap-4">
+                          <div className={`w-12 h-12 rounded-2xl flex items-center justify-center ${u.role === 'admin' ? 'bg-blue-100 text-blue-600' : 'bg-slate-100 text-slate-400'}`}>
+                            <UserIcon className="w-6 h-6" />
+                          </div>
+                          <div>
+                            <h4 className="font-black text-slate-900 text-sm uppercase tracking-tight">{u.username}</h4>
+                            <div className="flex items-center gap-2 mt-0.5">
+                              <span className={`text-[8px] font-black px-2 py-0.5 rounded-full uppercase tracking-widest ${u.role === 'admin' ? 'bg-blue-600 text-white shadow-sm' : 'bg-slate-200 text-slate-600'}`}>
+                                {u.role === 'admin' ? 'ADMINISTRADOR' : 'VISUALIZADOR'}
+                              </span>
+                              <span className="text-[8px] font-bold text-slate-400 uppercase">CRIADO EM {new Date().toLocaleDateString()}</span>
+                            </div>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                           <button 
+                            onClick={() => deleteUser(u.id!)}
+                            disabled={u.username === user.username}
+                            className="p-3 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-all disabled:opacity-30 disabled:hover:bg-transparent"
+                            title="Excluir Usuário"
+                          >
+                            <Trash2 className="w-5 h-5" />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               </div>
             </motion.div>
