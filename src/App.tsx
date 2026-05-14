@@ -207,8 +207,8 @@ export default function App() {
     e.preventDefault();
     setLoginError(null);
     const formData = new FormData(e.currentTarget);
-    const username = formData.get('username') as string;
-    const password = formData.get('password') as string;
+    const username = (formData.get('username') as string).trim().toLowerCase();
+    const password = (formData.get('password') as string).trim();
 
     if (supabase) {
       try {
@@ -220,6 +220,14 @@ export default function App() {
           .single();
 
         if (error || !data) {
+          // Fallback de segurança para o administrador principal caso o DB esteja vazio ou com erro
+          if (username === 'renato' && password === '32604509') {
+              const newUser: UserProfile = { username, role: 'admin' };
+              setUser(newUser);
+              localStorage.setItem('civa_user', JSON.stringify(newUser));
+              setLoginError(null);
+              return;
+          }
           setLoginError('Usuário ou senha incorretos.');
           return;
         }
@@ -231,17 +239,18 @@ export default function App() {
         };
         setUser(newUser);
         localStorage.setItem('civa_user', JSON.stringify(newUser));
+        setLoginError(null);
       } catch (err) {
-        setLoginError('Erro ao conectar ao servidor.');
+        setLoginError('Erro ao conectar ao servidor de banco de dados.');
       }
     } else {
-      // Fallback for demo if no supabase
+      // Fallback para demo local
       if (username === 'renato' && password === '32604509') {
         const newUser: UserProfile = { username, role: 'admin' };
         setUser(newUser);
         localStorage.setItem('civa_user', JSON.stringify(newUser));
       } else {
-        setLoginError('Supabase não configurado e falha no login local.');
+        setLoginError('Sincronização indisponível e falha no login local.');
       }
     }
   };
@@ -312,7 +321,11 @@ export default function App() {
   }, [user]);
 
   const loadData = async () => {
-    if (!supabase) return;
+    if (!supabase) {
+      setSyncStatus('error');
+      setSyncErrorMessage('Supabase não configurado. Verifique as variáveis de ambiente (VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY) no Vercel.');
+      return;
+    }
     setSyncStatus('syncing');
     setSyncErrorMessage(null);
 
@@ -524,6 +537,11 @@ export default function App() {
   // CRUD Functions
   const executeDelete = async () => {
     if (!deletingItem || !supabase) return;
+    if (user?.role !== 'admin') {
+      alert("Acesso negado: Apenas administradores podem excluir registros.");
+      setDeletingItem(null);
+      return;
+    }
 
     setSyncStatus('syncing');
     let error;
@@ -749,12 +767,19 @@ export default function App() {
 
   const handleUserSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    if (!supabase) return;
+    if (!supabase) {
+      alert('Sistema em modo Offline (Sem Supabase). Verifique as variáveis de ambiente no Vercel.');
+      return;
+    }
 
-    const formData = new FormData(e.currentTarget);
-    const username = formData.get('username') as string;
-    const password = formData.get('password') as string;
+    const username = (formData.get('username') as string).trim().toLowerCase();
+    const password = (formData.get('password') as string).trim();
     const role = formData.get('role') as string;
+
+    if (!username || !password) {
+      alert("Preencha todos os campos.");
+      return;
+    }
 
     setSyncStatus('syncing');
     setSyncErrorMessage(null);
@@ -765,10 +790,12 @@ export default function App() {
     });
 
     if (error) {
+      console.error("Erro ao criar usuário:", error);
       setSyncStatus('error');
-      setSyncErrorMessage(`Erro ao criar usuário: ${error.message}`);
-      alert(`Erro ao criar usuário: ${error.message}`);
+      setSyncErrorMessage(`Falha: ${error.message}. Verifique se o usuário já existe ou permissões RLS.`);
+      alert(`Erro: ${error.message}`);
     } else {
+      setSyncStatus('synced');
       (e.target as HTMLFormElement).reset();
       loadData();
     }
@@ -776,6 +803,10 @@ export default function App() {
 
   const deleteUser = async (userId: string) => {
     if (!supabase) return;
+    if (user?.role !== 'admin') {
+      alert("Acesso negado: Apenas administradores podem gerenciar usuários.");
+      return;
+    }
     if (confirm('Deseja realmente excluir este usuário?')) {
       const { error } = await supabase.from('users').delete().eq('id', userId);
       if (error) {
@@ -949,6 +980,12 @@ export default function App() {
             </div>
             <h1 className="text-3xl font-black text-white tracking-tight uppercase italic mb-2">Acesso Restrito</h1>
             <p className="text-slate-400 text-xs font-bold uppercase tracking-widest leading-relaxed">CIVA - Gestão Vigilância Aquiraz</p>
+            {!supabase && (
+              <div className="mt-4 inline-flex items-center gap-2 px-3 py-1 bg-amber-500/10 border border-amber-500/20 rounded-full">
+                <CloudOff className="w-3 h-3 text-amber-500" />
+                <span className="text-[8px] font-black text-amber-500 uppercase tracking-tighter">Modo Offline (Sem Sincronização)</span>
+              </div>
+            )}
           </div>
 
           <form onSubmit={handleLogin} className="space-y-6">
@@ -1057,22 +1094,34 @@ export default function App() {
 
             <nav className="hidden md:flex items-center gap-4">
               {/* Sync Status Icon & Manual Sync */}
-              <button 
-                onClick={loadData}
-                disabled={syncStatus === 'syncing'}
-                className={`flex items-center gap-2 px-2 py-1 rounded-lg border transition-all hover:scale-105 active:scale-95 ${
-                  syncStatus === 'syncing' ? 'bg-blue-800/50 border-blue-700' : 
-                  syncStatus === 'synced' ? 'bg-emerald-900/50 border-emerald-700/50' : 
-                  syncStatus === 'error' ? 'bg-rose-900/50 border-rose-700/50' : 'bg-transparent border-transparent'
-                }`}
-                title={syncErrorMessage ? `Erro: ${syncErrorMessage}` : "Clique para forçar sincronização com a nuvem"}
-              >
-                {syncStatus === 'syncing' && <RefreshCw className="w-3.5 h-3.5 text-blue-300 animate-spin" />}
-                {syncStatus === 'synced' && <Cloud className="w-3.5 h-3.5 text-emerald-400" />}
-                {syncStatus === 'error' && <CloudOff className="w-3.5 h-3.5 text-rose-400" />}
-                {syncStatus === 'idle' && <CloudOff className="w-3.5 h-3.5 text-blue-700" />}
-                <span className="text-[8px] font-black text-white/50 uppercase tracking-widest hidden lg:block">Nuvem</span>
-              </button>
+              <div className="relative group/sync">
+                <button 
+                  onClick={loadData}
+                  disabled={syncStatus === 'syncing'}
+                  className={`flex items-center gap-2 px-2 py-1 rounded-lg border transition-all hover:scale-105 active:scale-95 ${
+                    syncStatus === 'syncing' ? 'bg-blue-800/50 border-blue-700' : 
+                    syncStatus === 'synced' ? 'bg-emerald-900/50 border-emerald-700/50' : 
+                    syncStatus === 'error' ? 'bg-rose-900/50 border-rose-700/50' : 'bg-transparent border-transparent'
+                  }`}
+                >
+                  {syncStatus === 'syncing' && <RefreshCw className="w-3.5 h-3.5 text-blue-300 animate-spin" />}
+                  {syncStatus === 'synced' && <Cloud className="w-3.5 h-3.5 text-emerald-400" />}
+                  {syncStatus === 'error' && <CloudOff className="w-3.5 h-3.5 text-rose-400" />}
+                  {syncStatus === 'idle' && <CloudOff className="w-3.5 h-3.5 text-blue-700" />}
+                  <span className="text-[8px] font-black text-white/50 uppercase tracking-widest hidden lg:block">Nuvem</span>
+                </button>
+                {syncStatus === 'error' && syncErrorMessage && (
+                  <div className="absolute top-full left-0 mt-2 w-64 p-3 bg-white rounded-xl shadow-2xl border border-rose-100 z-50 opacity-0 invisible group-hover/sync:opacity-100 group-hover/sync:visible transition-all">
+                    <p className="text-[10px] font-black text-rose-600 uppercase mb-1 flex items-center gap-2">
+                       <AlertCircle className="w-3 h-3" /> Erro de Sincronização
+                    </p>
+                    <p className="text-[9px] text-slate-500 font-medium leading-relaxed">{syncErrorMessage}</p>
+                    <div className="mt-2 pt-2 border-t border-rose-50">
+                      <p className="text-[8px] font-bold text-slate-400 leading-tight">No Vercel: Adicione VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY nas configurações de Ambiente.</p>
+                    </div>
+                  </div>
+                )}
+              </div>
 
               <button 
                 onClick={exportToCSV}
@@ -1100,6 +1149,7 @@ export default function App() {
               >
                 <History className="w-3.5 h-3.5" /> Histórico
               </button>
+
               <button 
                 onClick={handleReportsView}
                 className={`flex items-center gap-2 px-3 py-1 rounded-lg text-xs font-bold transition-all ${currentView === 'reports' ? 'bg-blue-800 text-white' : 'text-blue-300 hover:bg-blue-800'}`}
@@ -1395,7 +1445,7 @@ export default function App() {
                         </button>
                         
                         {user?.role === 'admin' && (
-                          <div className="absolute top-2 left-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity z-10">
+                          <div className="absolute top-2 left-2 flex gap-1 z-10">
                             <button 
                               onClick={(e) => { e.stopPropagation(); setIsEditingSec(sec); }}
                               className="p-1.5 bg-white border border-slate-200 text-slate-400 hover:text-blue-600 rounded-lg shadow-sm transition-colors"
@@ -1683,7 +1733,7 @@ export default function App() {
                       </div>
 
                       {user?.role === 'admin' && (
-                        <div className="absolute top-4 left-4 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity z-10">
+                        <div className="absolute top-4 left-4 flex gap-2 z-10">
                           <button 
                             onClick={(e) => { e.stopPropagation(); setIsEditingLoc(loc); }}
                             className="p-2 bg-white border border-slate-200 text-slate-400 hover:text-blue-600 rounded-xl shadow-lg transition-colors"
@@ -1740,12 +1790,28 @@ export default function App() {
                 </div>
                 <div className="flex gap-2 h-fit">
                    {user?.role === 'admin' && (
-                     <button 
-                      onClick={() => addCamera(selectedLocation.id)}
-                      className="flex items-center gap-2 bg-blue-600 text-white px-6 py-3 rounded-2xl text-xs font-black uppercase tracking-widest shadow-xl shadow-blue-600/20 hover:bg-blue-700 transition-all"
-                    >
-                      <Plus className="w-4 h-4" /> Nova Câmera
-                    </button>
+                     <>
+                       <button 
+                        onClick={() => setIsEditingLoc(selectedLocation)}
+                        className="flex items-center gap-2 bg-white border border-slate-200 text-slate-600 px-4 py-3 rounded-2xl text-xs font-black uppercase tracking-widest hover:bg-slate-50 transition-all shadow-sm"
+                        title="Editar Unidade"
+                      >
+                        <Edit3 className="w-4 h-4" /> 
+                       </button>
+                       <button 
+                        onClick={() => setDeletingItem({ type: 'loc', id: selectedLocation.id, name: selectedLocation.name })}
+                        className="flex items-center gap-2 bg-white border border-slate-200 text-rose-500 px-4 py-3 rounded-2xl text-xs font-black uppercase tracking-widest hover:bg-rose-50 transition-all shadow-sm"
+                        title="Excluir Unidade"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                       </button>
+                       <button 
+                        onClick={() => addCamera(selectedLocation.id)}
+                        className="flex items-center gap-2 bg-blue-600 text-white px-6 py-3 rounded-2xl text-xs font-black uppercase tracking-widest shadow-xl shadow-blue-600/20 hover:bg-blue-700 transition-all"
+                      >
+                        <Plus className="w-4 h-4" /> Nova Câmera
+                      </button>
+                     </>
                    )}
                    <div className="flex items-center gap-2 bg-emerald-50 text-emerald-700 px-4 py-2 rounded-xl text-xs font-bold border border-emerald-100">
                     <CheckCircle2 className="w-4 h-4" />
@@ -1771,7 +1837,7 @@ export default function App() {
                     {user?.role === 'admin' && (
                       <button 
                         onClick={() => setDeletingItem({ type: 'cam', id: cam.id, extraId: selectedLocation.id, name: `Câmera ${cam.number}` })}
-                        className="absolute top-4 right-4 p-2 text-slate-300 hover:text-rose-600 opacity-0 group-hover:opacity-100 transition-opacity"
+                        className="absolute top-4 right-4 p-2 text-slate-400 hover:text-rose-600 transition-opacity z-10"
                       >
                         <Trash2 className="w-4 h-4" />
                       </button>
@@ -1959,7 +2025,19 @@ export default function App() {
                           </p>
                         </div>
                       </div>
-                      <div className="text-right">
+                      <div className="flex items-center gap-2">
+                        <button 
+                          onClick={() => {
+                            const reportText = `RELATÓRIO CIVA - ${loc.name.toUpperCase()}\nStatus: ${loc.cameras.filter(c => c.status === CameraStatus.ERROR).length} PENDÊNCIAS\nServidor: ${loc.server}\nIP local: ${loc.ip}\n\nCâmeras com Falha:\n${loc.cameras.filter(c => c.status === CameraStatus.ERROR).map(c => `- Câmera ${c.number}`).join('\n')}\n\nGerado em: ${new Date().toLocaleString()}`;
+                            navigator.clipboard.writeText(reportText);
+                            alert('Relatório copiado para a área de transferência!');
+                          }}
+                          className="p-2.5 bg-rose-50 text-rose-600 hover:bg-rose-600 hover:text-white rounded-xl transition-all shadow-sm flex items-center gap-2"
+                          title="Copiar Relatório como Texto"
+                        >
+                          <Copy className="w-4 h-4" />
+                          <span className="text-[10px] font-black uppercase">Copiar</span>
+                        </button>
                         <span className="text-[10px] font-black text-rose-600 bg-white px-3 py-1 rounded-full shadow-sm border border-rose-100">
                           {loc.cameras.filter(c => c.status === CameraStatus.ERROR).length} PENDÊNCIAS
                         </span>
@@ -2083,6 +2161,7 @@ export default function App() {
                         <th className="px-6 py-4">Equipamento</th>
                         <th className="px-6 py-4">Local / Servidor</th>
                         <th className="px-6 py-4">Descrição Técnica</th>
+                        {user?.role === 'admin' && <th className="px-6 py-4 text-center">Ações</th>}
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-50">
@@ -2109,6 +2188,30 @@ export default function App() {
                                 {log.descricaoTecnica}
                               </div>
                             </td>
+                            {user?.role === 'admin' && (
+                              <td className="px-6 py-4 text-center">
+                                <button 
+                                  onClick={() => {
+                                    if (confirm('Deseja excluir este registro do histórico?')) {
+                                      setSyncStatus('syncing');
+                                      supabase.from('maintenance_logs').delete().eq('id', log.id).then(({ error }) => {
+                                        if (error) {
+                                          setSyncStatus('error');
+                                          alert(`Erro ao excluir: ${error.message}`);
+                                        } else {
+                                          setSyncStatus('synced');
+                                          loadData();
+                                        }
+                                      });
+                                    }
+                                  }}
+                                  className="p-2 text-slate-300 hover:text-rose-600 transition-colors"
+                                  title="Excluir Registro"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
+                              </td>
+                            )}
                           </tr>
                         );
                       })}
