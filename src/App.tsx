@@ -72,9 +72,7 @@ const IconMap: { [key: string]: any } = {
 };
 
 const MAP_API_KEY =
-  ((import.meta as any).env?.VITE_GOOGLE_MAPS_PLATFORM_KEY) ||
-  ((globalThis as any).process?.env?.GOOGLE_MAPS_PLATFORM_KEY) ||
-  ((globalThis as any).GOOGLE_MAPS_PLATFORM_KEY) ||
+  (import.meta as any).env?.VITE_GOOGLE_MAPS_PLATFORM_KEY ||
   '';
 const hasValidMapKey = Boolean(MAP_API_KEY) && MAP_API_KEY !== 'YOUR_API_KEY';
 
