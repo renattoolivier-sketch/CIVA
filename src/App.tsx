@@ -38,7 +38,6 @@ import {
   User as UserIcon,
   Plus,
   X,
-  Download,
   ShieldAlert,
   Key
 } from 'lucide-react';
@@ -194,6 +193,16 @@ export default function App() {
   const [syncStatus, setSyncStatus] = useState<'synced' | 'syncing' | 'error' | 'idle'>('idle');
   const [syncErrorMessage, setSyncErrorMessage] = useState<string | null>(null);
 
+  // Sync selectedLocation with locations array when it changes
+  useEffect(() => {
+    if (selectedLocation) {
+      const refreshed = locations.find(l => l.id === selectedLocation.id);
+      if (refreshed) {
+        setSelectedLocation(refreshed);
+      }
+    }
+  }, [locations]);
+
   // Load Auth Session
   useEffect(() => {
     const savedUser = localStorage.getItem('civa_user');
@@ -263,34 +272,6 @@ export default function App() {
     }
   };
 
-  const exportToCSV = () => {
-    // Basic CSV data gathering
-    const headers = ['Local', 'Secretaria', 'Sub-Secretaria', 'IP', 'Servidor', 'Link Mapa', 'Total Câmeras'];
-    const rows = locations.map(l => {
-      const sec = secretariats.find(s => s.id === l.secretariatId)?.name || l.secretariatId;
-      return [
-        l.name,
-        sec,
-        l.subSecretariat || '',
-        l.ip || '',
-        l.server || '',
-        l.mapsLink || '',
-        l.cameras.length
-      ].map(v => typeof v === 'string' ? `"${v.replace(/"/g, '""')}"` : v);
-    });
-
-    const csvContent = [headers, ...rows].map(e => e.join(",")).join("\n");
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.setAttribute("href", url);
-    link.setAttribute("download", `CIVA_Export_${new Date().toISOString().split('T')[0]}.csv`);
-    link.style.visibility = 'hidden';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  };
-
 
   // Real-time Subscriptions
   useEffect(() => {
@@ -298,21 +279,17 @@ export default function App() {
 
     const channels = [
       supabase.channel('public:secretariats')
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'secretariats' }, payload => {
-          loadData();
-        }).subscribe(),
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'secretariats' }, () => loadData())
+        .subscribe(),
       supabase.channel('public:locations')
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'locations' }, payload => {
-          loadData();
-        }).subscribe(),
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'locations' }, () => loadData())
+        .subscribe(),
       supabase.channel('public:maintenance_logs')
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'maintenance_logs' }, payload => {
-          loadData();
-        }).subscribe(),
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'maintenance_logs' }, () => loadData())
+        .subscribe(),
       supabase.channel('public:users')
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'users' }, payload => {
-          loadData();
-        }).subscribe()
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'users' }, () => loadData())
+        .subscribe()
     ];
 
     return () => {
@@ -530,6 +507,9 @@ export default function App() {
     if (logRes.error || locRes.error) {
       setSyncStatus('error');
       alert('Erro ao registrar falha.');
+    } else {
+      setSyncStatus('synced');
+      await loadData();
     }
     setReportingCamProblem(null);
   };
@@ -574,6 +554,9 @@ export default function App() {
     if (error) {
       setSyncStatus('error');
       alert(`Erro ao excluir: ${error.message}`);
+    } else {
+      setSyncStatus('synced');
+      await loadData();
     }
     setDeletingItem(null);
   };
@@ -603,6 +586,9 @@ export default function App() {
     if (logRes.error || locRes.error) {
       setSyncStatus('error');
       alert('Erro ao registrar problema geral.');
+    } else {
+      setSyncStatus('synced');
+      await loadData();
     }
     setReportingLocProblem(null);
   };
@@ -624,7 +610,12 @@ export default function App() {
     const updatedCameras = [...loc.cameras, newCamera];
     const { error } = await supabase.from('locations').update({ cameras: updatedCameras }).eq('id', locationId);
     
-    if (error) alert(`Erro ao adicionar câmera: ${error.message}`);
+    if (error) {
+      alert(`Erro ao adicionar câmera: ${error.message}`);
+    } else {
+      setSyncStatus('synced');
+      await loadData();
+    }
   };
 
   const handleSecSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
@@ -648,6 +639,8 @@ export default function App() {
       setSyncStatus('error');
       alert(`Erro ao salvar secretaria: ${error.message}`);
     } else {
+      setSyncStatus('synced');
+      await loadData();
       setIsEditingSec(null);
       setIsAddingSec(false);
     }
@@ -687,6 +680,8 @@ export default function App() {
       setSyncStatus('error');
       alert(`Erro ao salvar local: ${error.message}`);
     } else {
+      setSyncStatus('synced');
+      await loadData();
       setIsEditingLoc(null);
       setIsAddingLoc(false);
     }
@@ -727,6 +722,8 @@ export default function App() {
       setSyncStatus('error');
       alert('Erro ao concluir reparo.');
     } else {
+      setSyncStatus('synced');
+      await loadData();
       setRepairingCamera(null);
     }
   };
@@ -762,6 +759,9 @@ export default function App() {
     if (logRes.error || locRes.error) {
       setSyncStatus('error');
       alert('Erro ao realizar reparo geral.');
+    } else {
+      setSyncStatus('synced');
+      await loadData();
     }
   };
 
@@ -772,6 +772,7 @@ export default function App() {
       return;
     }
 
+    const formData = new FormData(e.currentTarget);
     const username = (formData.get('username') as string).trim().toLowerCase();
     const password = (formData.get('password') as string).trim();
     const role = formData.get('role') as string;
@@ -796,8 +797,8 @@ export default function App() {
       alert(`Erro: ${error.message}`);
     } else {
       setSyncStatus('synced');
+      await loadData();
       (e.target as HTMLFormElement).reset();
-      loadData();
     }
   };
 
@@ -1047,12 +1048,12 @@ export default function App() {
   return (
     <div className="h-screen bg-slate-50 flex flex-col font-sans selection:bg-blue-100 selection:text-blue-900 overflow-hidden">
       {/* Top Header */}
-      <header className="bg-blue-900 text-white border-b border-blue-950 flex-none h-14 z-40 shadow-xl">
-        <div className="h-full px-4 flex items-center justify-between">
-          <div className="flex items-center gap-4">
+      <header className="bg-blue-900 text-white border-b border-blue-950 flex-none z-40 shadow-xl">
+        <div className="h-14 px-4 flex items-center gap-6">
+          <div className="flex items-center gap-4 shrink-0">
             <div className="flex items-center gap-3">
               <ShieldCheck className="w-6 h-6 text-blue-300" />
-              <div>
+              <div className="hidden lg:block">
                 <h1 className="text-sm font-bold tracking-tight">CIVA - VIGILÂNCIA AQUIRAZ</h1>
                 <p className="text-[9px] text-blue-400 uppercase font-black tracking-widest leading-none">Gestão Centralizada de Ativos</p>
               </div>
@@ -1064,34 +1065,34 @@ export default function App() {
                   else if (currentView === 'locations') setCurrentView('dashboard');
                   else setCurrentView('dashboard');
                 }}
-                className="ml-4 flex items-center gap-2 px-3 py-1 bg-blue-800 hover:bg-blue-700 rounded-lg text-xs font-bold transition-colors"
+                className="flex items-center gap-2 px-3 py-1 bg-blue-800 hover:bg-blue-700 rounded-lg text-xs font-bold transition-colors"
               >
                 <ArrowLeft className="w-3.5 h-3.5" /> Voltar
               </button>
             )}
           </div>
           
-          <div className="flex items-center gap-6">
-            {/* Search Input */}
-            <div className="hidden sm:flex relative items-center">
-              <Search className="absolute left-3 w-4 h-4 text-blue-400" />
-              <input 
-                type="text" 
-                placeholder="PROCURAR LOCAIS, IPS, CÂMERAS..." 
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="bg-blue-950/50 border border-blue-800 text-blue-100 text-[10px] font-bold tracking-widest pl-10 pr-4 py-2 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/50 w-64 placeholder:text-blue-700 transition-all focus:w-80"
-              />
-              {searchQuery && (
-                <button 
-                  onClick={() => setSearchQuery('')}
-                  className="absolute right-3 p-0.5 hover:bg-blue-800 rounded-md transition-colors"
-                >
-                  <X className="w-3 h-3 text-blue-400" />
-                </button>
-              )}
-            </div>
+          {/* Search Input - Expanded */}
+          <div className="flex-1 relative flex items-center">
+            <Search className="absolute left-3 w-4 h-4 text-blue-400" />
+            <input 
+              type="text" 
+              placeholder="PROCURAR LOCAIS, IPS, CÂMERAS..." 
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="bg-blue-950/50 border border-blue-800 text-blue-100 text-[10px] font-bold tracking-widest pl-10 pr-4 py-2 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/50 w-full placeholder:text-blue-700 transition-all font-mono"
+            />
+            {searchQuery && (
+              <button 
+                onClick={() => setSearchQuery('')}
+                className="absolute right-3 p-0.5 hover:bg-blue-800 rounded-md transition-colors"
+              >
+                <X className="w-3 h-3 text-blue-400" />
+              </button>
+            )}
+          </div>
 
+          <div className="flex items-center gap-4 shrink-0">
             <nav className="hidden md:flex items-center gap-4">
               {/* Sync Status Icon & Manual Sync */}
               <div className="relative group/sync">
@@ -1108,7 +1109,7 @@ export default function App() {
                   {syncStatus === 'synced' && <Cloud className="w-3.5 h-3.5 text-emerald-400" />}
                   {syncStatus === 'error' && <CloudOff className="w-3.5 h-3.5 text-rose-400" />}
                   {syncStatus === 'idle' && <CloudOff className="w-3.5 h-3.5 text-blue-700" />}
-                  <span className="text-[8px] font-black text-white/50 uppercase tracking-widest hidden lg:block">Nuvem</span>
+                  <span className="text-[8px] font-black text-white/50 uppercase tracking-widest hidden lg:block">Status Nuvem</span>
                 </button>
                 {syncStatus === 'error' && syncErrorMessage && (
                   <div className="absolute top-full left-0 mt-2 w-64 p-3 bg-white rounded-xl shadow-2xl border border-rose-100 z-50 opacity-0 invisible group-hover/sync:opacity-100 group-hover/sync:visible transition-all">
@@ -1116,60 +1117,15 @@ export default function App() {
                        <AlertCircle className="w-3 h-3" /> Erro de Sincronização
                     </p>
                     <p className="text-[9px] text-slate-500 font-medium leading-relaxed">{syncErrorMessage}</p>
-                    <div className="mt-2 pt-2 border-t border-rose-50">
-                      <p className="text-[8px] font-bold text-slate-400 leading-tight">No Vercel: Adicione VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY nas configurações de Ambiente.</p>
-                    </div>
                   </div>
                 )}
               </div>
-
-              <button 
-                onClick={exportToCSV}
-                className="flex items-center gap-2 px-3 py-1 rounded-lg text-[10px] font-black text-blue-300 hover:bg-blue-800 uppercase tracking-widest transition-all"
-                title="Exportar dados locais para CSV"
-              >
-                <Download className="w-3.5 h-3.5" /> <span className="hidden xl:inline">Exportar CSV</span>
-              </button>
-
-              <button 
-                onClick={() => handleSelectView('dashboard')}
-                className={`flex items-center gap-2 px-3 py-1 rounded-lg text-xs font-bold transition-all ${currentView === 'dashboard' || currentView === 'locations' || currentView === 'cameras' ? 'bg-blue-800 text-white' : 'text-blue-300 hover:bg-blue-800'}`}
-              >
-                <LayoutDashboard className="w-3.5 h-3.5" /> Home
-              </button>
-              <button 
-                onClick={() => handleSelectView('map')}
-                className={`flex items-center gap-2 px-3 py-1 rounded-lg text-xs font-bold transition-all ${currentView === 'map' ? 'bg-blue-800 text-white' : 'text-blue-300 hover:bg-blue-800'}`}
-              >
-                <MapIcon className="w-3.5 h-3.5" /> Mapa
-              </button>
-              <button 
-                onClick={() => handleSelectView('history')}
-                className={`flex items-center gap-2 px-3 py-1 rounded-lg text-xs font-bold transition-all ${currentView === 'history' ? 'bg-blue-800 text-white' : 'text-blue-300 hover:bg-blue-800'}`}
-              >
-                <History className="w-3.5 h-3.5" /> Histórico
-              </button>
-
-              <button 
-                onClick={handleReportsView}
-                className={`flex items-center gap-2 px-3 py-1 rounded-lg text-xs font-bold transition-all ${currentView === 'reports' ? 'bg-blue-800 text-white' : 'text-blue-300 hover:bg-blue-800'}`}
-              >
-                <AlertTriangle className="w-3.5 h-3.5" /> Relatórios
-              </button>
-              {user?.role === 'admin' && (
-                <button 
-                  onClick={() => setCurrentView('users')}
-                  className={`flex items-center gap-2 px-3 py-1 rounded-lg text-xs font-bold transition-all ${currentView === 'users' ? 'bg-blue-800 text-white' : 'text-blue-300 hover:bg-blue-800'}`}
-                >
-                  <Users className="w-3.5 h-3.5" /> Usuários
-                </button>
-              )}
             </nav>
             <div className="h-8 w-px bg-blue-800"></div>
             <div className="flex items-center gap-3">
               <div className="hidden sm:block text-right">
                 <p className="text-[10px] font-black text-blue-200 uppercase tracking-tighter leading-none">{user?.username}</p>
-                <p className="text-[8px] font-bold text-blue-400 uppercase tracking-widest mt-0.5">{user?.role === 'admin' ? 'Administrador' : 'Visualizador'}</p>
+                <p className="text-[8px] font-bold text-blue-400 uppercase tracking-widest mt-0.5">ADMIN</p>
               </div>
               <div className="relative group">
                 <div className="w-9 h-9 rounded-full bg-blue-700 flex items-center justify-center text-xs font-bold border border-blue-600 overflow-hidden shadow-lg group-hover:bg-blue-600 transition-colors">
@@ -1205,7 +1161,44 @@ export default function App() {
             </div>
           </div>
         </div>
+
+        {/* New Navigation Bar below Blue Strip */}
+        <div className="bg-blue-800 border-t border-blue-700/50 px-2 py-1.5 flex items-center gap-1.5 overflow-x-auto no-scrollbar">
+          <button 
+            onClick={() => handleSelectView('dashboard')}
+            className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all whitespace-nowrap ${currentView === 'dashboard' || currentView === 'locations' || currentView === 'cameras' ? 'bg-blue-600 text-white shadow-lg' : 'text-blue-100 hover:bg-blue-700'}`}
+          >
+            <LayoutDashboard className="w-4 h-4" /> Home
+          </button>
+          <button 
+            onClick={() => handleSelectView('map')}
+            className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all whitespace-nowrap ${currentView === 'map' ? 'bg-blue-600 text-white shadow-lg' : 'text-blue-100 hover:bg-blue-700'}`}
+          >
+            <MapIcon className="w-4 h-4" /> Mapa
+          </button>
+          <button 
+            onClick={() => handleSelectView('history')}
+            className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all whitespace-nowrap ${currentView === 'history' ? 'bg-blue-600 text-white shadow-lg' : 'text-blue-100 hover:bg-blue-700'}`}
+          >
+            <History className="w-4 h-4" /> Histórico
+          </button>
+          <button 
+            onClick={handleReportsView}
+            className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all whitespace-nowrap ${currentView === 'reports' ? 'bg-blue-600 text-white shadow-lg' : 'text-blue-100 hover:bg-blue-700'}`}
+          >
+            <AlertTriangle className="w-4 h-4" /> Relatórios
+          </button>
+          {user?.role === 'admin' && (
+            <button 
+              onClick={() => setCurrentView('users')}
+              className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all whitespace-nowrap ${currentView === 'users' ? 'bg-blue-600 text-white shadow-lg' : 'text-blue-100 hover:bg-blue-700'}`}
+            >
+              <Users className="w-4 h-4" /> Usuários
+            </button>
+          )}
+        </div>
       </header>
+
 
       <div className="flex flex-1 overflow-hidden relative">
         {/* Main Content Area */}
@@ -1445,7 +1438,7 @@ export default function App() {
                         </button>
                         
                         {user?.role === 'admin' && (
-                          <div className="absolute top-2 left-2 flex gap-1 z-10">
+                          <div className="absolute top-2 left-2 flex gap-1 z-10 opacity-0 group-hover:opacity-100 transition-opacity">
                             <button 
                               onClick={(e) => { e.stopPropagation(); setIsEditingSec(sec); }}
                               className="p-1.5 bg-white border border-slate-200 text-slate-400 hover:text-blue-600 rounded-lg shadow-sm transition-colors"
@@ -1733,7 +1726,7 @@ export default function App() {
                       </div>
 
                       {user?.role === 'admin' && (
-                        <div className="absolute top-4 left-4 flex gap-2 z-10">
+                        <div className="absolute top-4 left-4 flex gap-2 z-10 opacity-0 group-hover:opacity-100 transition-opacity">
                           <button 
                             onClick={(e) => { e.stopPropagation(); setIsEditingLoc(loc); }}
                             className="p-2 bg-white border border-slate-200 text-slate-400 hover:text-blue-600 rounded-xl shadow-lg transition-colors"
@@ -1837,7 +1830,7 @@ export default function App() {
                     {user?.role === 'admin' && (
                       <button 
                         onClick={() => setDeletingItem({ type: 'cam', id: cam.id, extraId: selectedLocation.id, name: `Câmera ${cam.number}` })}
-                        className="absolute top-4 right-4 p-2 text-slate-400 hover:text-rose-600 transition-opacity z-10"
+                        className="absolute top-4 right-4 p-2 text-slate-400 hover:text-rose-600 opacity-0 group-hover:opacity-100 transition-opacity z-10"
                       >
                         <Trash2 className="w-4 h-4" />
                       </button>
@@ -2168,7 +2161,7 @@ export default function App() {
                       {maintenanceLogs.map(log => {
                         const loc = locations.find(l => l.id === log.locationId);
                         return (
-                          <tr key={log.id} className="hover:bg-slate-50 transition-colors">
+                          <tr key={log.id} className="hover:bg-slate-50 transition-colors group">
                             <td className="px-6 py-4">
                               <span className="font-bold text-slate-800">{new Date(log.timestamp).toLocaleDateString()}</span><br/>
                               <span className="text-[10px] text-slate-400 font-bold">{new Date(log.timestamp).toLocaleTimeString()}</span>
@@ -2205,7 +2198,7 @@ export default function App() {
                                       });
                                     }
                                   }}
-                                  className="p-2 text-slate-300 hover:text-rose-600 transition-colors"
+                                  className="p-2 text-slate-300 hover:text-rose-600 opacity-0 group-hover:opacity-100 transition-all"
                                   title="Excluir Registro"
                                 >
                                   <Trash2 className="w-4 h-4" />
@@ -2320,7 +2313,7 @@ export default function App() {
                             </div>
                           </div>
                         </div>
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
                            <button 
                             onClick={() => deleteUser(u.id!)}
                             disabled={u.username === user.username}
