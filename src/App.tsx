@@ -71,10 +71,15 @@ const IconMap: { [key: string]: any } = {
   Map: MapIcon,
 };
 
-const MAP_API_KEY =
-  (import.meta as any).env?.VITE_GOOGLE_MAPS_PLATFORM_KEY ||
+const MAP_API_KEY = 
+  (import.meta as any).env?.VITE_GOOGLE_MAPS_PLATFORM_KEY || 
+  (import.meta as any).env?.GOOGLE_MAPS_PLATFORM_KEY || 
+  (globalThis as any).GOOGLE_MAPS_PLATFORM_KEY ||
   '';
-const hasValidMapKey = Boolean(MAP_API_KEY) && MAP_API_KEY !== 'YOUR_API_KEY';
+
+console.log('[CIVA] Verificando Chave do Mapa:', MAP_API_KEY ? 'Presente' : 'Ausente');
+
+const hasValidMapKey = Boolean(MAP_API_KEY) && MAP_API_KEY.length > 20 && MAP_API_KEY !== 'YOUR_API_KEY';
 
 function MarkerWithInfoWindow({ position, location, onSelect }: { 
   position: google.maps.LatLngLiteral, 
@@ -2461,7 +2466,7 @@ export default function App() {
                       </div>
                       <div className="flex items-center gap-3">
                         <div className="w-6 h-6 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center text-xs font-black">3</div>
-                        <p className="text-sm font-bold text-slate-700">Em <strong>Secrets</strong>, adicione <code>GOOGLE_MAPS_PLATFORM_KEY</code> e cole sua chave.</p>
+                        <p className="text-sm font-bold text-slate-700">Em <strong>Secrets</strong>, adicione <code>VITE_GOOGLE_MAPS_PLATFORM_KEY</code> e cole sua chave.</p>
                       </div>
                     </div>
                   </div>
