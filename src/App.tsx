@@ -35,13 +35,15 @@ import {
   RefreshCw,
   LogOut,
   Lock,
+  Printer,
   User as UserIcon,
   Plus,
   X,
+  Copy,
   ShieldAlert,
   Key
 } from 'lucide-react';
-import { motion, AnimatePresence } from 'motion/react';
+import { motion, AnimatePresence } from 'framer-motion';
 import { 
   CameraStatus, 
   Secretariat, 
@@ -70,9 +72,9 @@ const IconMap: { [key: string]: any } = {
 };
 
 const MAP_API_KEY =
-  process.env.GOOGLE_MAPS_PLATFORM_KEY ||
-  (import.meta as any).env?.VITE_GOOGLE_MAPS_PLATFORM_KEY ||
-  (globalThis as any).GOOGLE_MAPS_PLATFORM_KEY ||
+  ((import.meta as any).env?.VITE_GOOGLE_MAPS_PLATFORM_KEY) ||
+  ((globalThis as any).process?.env?.GOOGLE_MAPS_PLATFORM_KEY) ||
+  ((globalThis as any).GOOGLE_MAPS_PLATFORM_KEY) ||
   '';
 const hasValidMapKey = Boolean(MAP_API_KEY) && MAP_API_KEY !== 'YOUR_API_KEY';
 
@@ -273,29 +275,40 @@ export default function App() {
   };
 
 
-  // Real-time Subscriptions
+  // Real-time Subscriptions with Status Monitoring
   useEffect(() => {
     if (!user || !supabase) return;
 
-    const channels = [
-      supabase.channel('public:secretariats')
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'secretariats' }, () => loadData())
-        .subscribe(),
-      supabase.channel('public:locations')
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'locations' }, () => loadData())
-        .subscribe(),
-      supabase.channel('public:maintenance_logs')
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'maintenance_logs' }, () => loadData())
-        .subscribe(),
-      supabase.channel('public:users')
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'users' }, () => loadData())
-        .subscribe()
-    ];
+    const handleRealtimeChange = (table: string, payload: any) => {
+      console.log(`[Realtime] Mudança detectada em ${table}:`, payload);
+      loadData();
+    };
+
+    console.log('[Realtime] Tentando conectar aos canais...');
+
+    const channel = supabase.channel('civa_realtime_all')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'secretariats' }, (p) => handleRealtimeChange('secretariats', p))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'locations' }, (p) => handleRealtimeChange('locations', p))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'maintenance_logs' }, (p) => handleRealtimeChange('maintenance_logs', p))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'users' }, (p) => handleRealtimeChange('users', p))
+      .subscribe((status) => {
+        console.log('[Realtime] Status da Conexão:', status);
+        if (status === 'SUBSCRIBED') {
+          console.log('[Realtime] Conectado e ouvindo mudanças!');
+          setSyncStatus('synced');
+        }
+        if (status === 'CHANNEL_ERROR') {
+          console.warn('[Realtime] Erro no canal. Verifique se o Realtime está habilitado no Dashboard e as políticas RLS.');
+          setSyncStatus('error');
+          setSyncErrorMessage('Erro na conexão em tempo real. Tente atualizar a página.');
+        }
+      });
 
     return () => {
-      channels.forEach(channel => supabase.removeChannel(channel));
+      console.log('[Realtime] Desconectando canais...');
+      supabase.removeChannel(channel);
     };
-  }, [user]);
+  }, [user, supabase]);
 
   const loadData = async () => {
     if (!supabase) {
@@ -424,8 +437,29 @@ export default function App() {
   };
 
   const handleCopyReport = (reportText: string) => {
-    navigator.clipboard.writeText(reportText);
-    alert('Relatório copiado para a área de transferência!');
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(reportText);
+      alert('Relatório copiado para a área de transferência!');
+    } else {
+      // Fallback for environments where navigator.clipboard is not available
+      const textArea = document.createElement("textarea");
+      textArea.value = reportText;
+      // Ensure the textarea is not visible
+      textArea.style.position = "fixed";
+      textArea.style.left = "-9999px";
+      textArea.style.top = "0";
+      document.body.appendChild(textArea);
+      textArea.focus();
+      textArea.select();
+      try {
+        document.execCommand('copy');
+        alert('Relatório copiado!');
+      } catch (err) {
+        console.error('Erro ao copiar:', err);
+        alert('Erro ao copiar relatório.');
+      }
+      document.body.removeChild(textArea);
+    }
   };
 
   const handleSelectSecretariat = (sec: Secretariat) => {
@@ -1206,8 +1240,8 @@ export default function App() {
           <div className="p-4 sm:p-6 lg:p-10 max-w-7xl mx-auto min-h-full">
             <AnimatePresence mode="wait">
           
-          {/* Search Results View */}
-          {searchQuery.trim() !== '' && filteredResults && (
+          {/* Search Results View - Only show if in dashboard or specific views that don't have internal filter */}
+          {currentView === 'dashboard' && searchQuery.trim() !== '' && filteredResults && (
             <motion.div 
               key="search-results"
               initial={{ opacity: 0, scale: 0.98 }}
@@ -1873,7 +1907,7 @@ export default function App() {
           )}
 
           {/* Reports */}
-          {currentView === 'reports' && searchQuery.trim() === '' && (
+          {currentView === 'reports' && (
             <motion.div 
               key="reports"
               initial={{ opacity: 0, scale: 0.98 }}
@@ -1963,7 +1997,7 @@ export default function App() {
                     onClick={() => window.print()}
                     className="px-6 py-4 bg-slate-100 text-slate-600 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-slate-200 transition-all flex items-center gap-2"
                   >
-                    <Plus className="w-4 h-4" /> Imprimir
+                    <Printer className="w-4 h-4" /> Imprimir
                   </button>
                 </div>
               </div>
@@ -1979,10 +2013,10 @@ export default function App() {
                   return (
                     <div key={sec.id} className="bg-[#B9D9EB] p-5 rounded-3xl border border-white/20 shadow-xl shadow-blue-900/10 hover:shadow-blue-400/30 transition-all hover:-translate-y-1 flex items-center gap-4">
                       <div className="bg-slate-50 w-10 h-10 rounded-xl flex items-center justify-center text-slate-400">
-                        {IconMap[sec.icon] ? React.createElement(IconMap[sec.icon], { size: 20 }) : <Building2 size={20} />}
+                        {sec.icon && IconMap[sec.icon] ? React.createElement(IconMap[sec.icon], { size: 20 }) : <Building2 size={20} />}
                       </div>
                       <div className="flex-1">
-                        <h4 className="text-[10px] font-black text-blue-900/50 uppercase tracking-widest leading-none mb-1">{sec.name}</h4>
+                        <h4 className="text-[10px] font-black text-blue-900/50 uppercase tracking-widest leading-none mb-1 line-clamp-1">{sec.name}</h4>
                         <div className="flex items-baseline gap-2">
                           <span className="text-lg font-black text-blue-950 leading-none">{total}</span>
                           <span className="text-[9px] font-bold text-blue-900/60 uppercase">Câmeras</span>
@@ -2004,7 +2038,7 @@ export default function App() {
               </div>
 
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                {locations.filter(l => l.cameras.some(c => c.status === CameraStatus.ERROR)).map(loc => (
+                {(searchQuery.trim() ? filteredResults.locations : locations).filter(l => l.cameras.some(c => c.status === CameraStatus.ERROR)).map(loc => (
                   <div key={loc.id} className="bg-white rounded-[2rem] border border-slate-200 overflow-hidden shadow-sm hover:shadow-xl hover:shadow-rose-900/5 transition-all">
                     <div className="bg-rose-50 p-6 border-b border-rose-100 flex items-center justify-between">
                       <div className="flex items-center gap-4">
@@ -2022,14 +2056,23 @@ export default function App() {
                         <button 
                           onClick={() => {
                             const reportText = `RELATÓRIO CIVA - ${loc.name.toUpperCase()}\nStatus: ${loc.cameras.filter(c => c.status === CameraStatus.ERROR).length} PENDÊNCIAS\nServidor: ${loc.server}\nIP local: ${loc.ip}\n\nCâmeras com Falha:\n${loc.cameras.filter(c => c.status === CameraStatus.ERROR).map(c => `- Câmera ${c.number}`).join('\n')}\n\nGerado em: ${new Date().toLocaleString()}`;
-                            navigator.clipboard.writeText(reportText);
-                            alert('Relatório copiado para a área de transferência!');
+                            handleCopyReport(reportText);
                           }}
                           className="p-2.5 bg-rose-50 text-rose-600 hover:bg-rose-600 hover:text-white rounded-xl transition-all shadow-sm flex items-center gap-2"
                           title="Copiar Relatório como Texto"
                         >
                           <Copy className="w-4 h-4" />
                           <span className="text-[10px] font-black uppercase">Copiar</span>
+                        </button>
+                        <button 
+                          onClick={() => {
+                            // Focus on this location's data for printing
+                            window.print();
+                          }}
+                          className="p-2.5 bg-slate-50 text-slate-600 hover:bg-slate-600 hover:text-white rounded-xl transition-all shadow-sm flex items-center gap-2"
+                          title="Imprimir este Local"
+                        >
+                          <Printer className="w-4 h-4" />
                         </button>
                         <span className="text-[10px] font-black text-rose-600 bg-white px-3 py-1 rounded-full shadow-sm border border-rose-100">
                           {loc.cameras.filter(c => c.status === CameraStatus.ERROR).length} PENDÊNCIAS
@@ -2432,7 +2475,6 @@ export default function App() {
                     defaultCenter={{ lat: -3.89, lng: -38.38 }}
                     defaultZoom={13}
                     mapId="DEMO_MAP_ID"
-                    internalUsageAttributionIds={['gmp_mcp_codeassist_v1_aistudio']}
                     style={{ width: '100%', height: '100%' }}
                     gestureHandling={'greedy'}
                     disableDefaultUI={false}

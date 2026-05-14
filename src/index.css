@@ -1,1 +1,38 @@
 @import "tailwindcss";
+
+@layer base {
+  @media print {
+    header, nav, .flex-none, button, .no-print {
+      display: none !important;
+    }
+    
+    body, .min-h-screen, .bg-slate-50 {
+      background: white !important;
+      padding: 0 !important;
+      margin: 0 !important;
+      height: auto !important;
+      overflow: visible !important;
+    }
+
+    .max-w-7xl {
+      max-width: 100% !important;
+      margin: 0 !important;
+      padding: 20px !important;
+    }
+
+    .shadow-xl, .shadow-sm, .shadow-lg {
+      shadow: none !important;
+      box-shadow: none !important;
+      border: 1px solid #eee !important;
+    }
+
+    .bg-rose-50 {
+      background-color: transparent !important;
+      border-bottom: 2px solid #rose-100 !important;
+    }
+
+    .text-rose-900, .text-slate-900 {
+      color: black !important;
+    }
+  }
+}
