@@ -1253,7 +1253,7 @@ export default function App() {
   }
 
   return (
-    <div className="h-screen bg-slate-50 flex flex-col font-sans selection:bg-blue-100 selection:text-blue-900 overflow-hidden">
+    <div className="h-screen bg-slate-100 flex flex-col font-sans selection:bg-blue-100 selection:text-blue-900 overflow-hidden">
       {/* Top Header */}
       <header className="bg-blue-900 text-white border-b border-blue-950 flex-none z-40 shadow-xl">
         <div className="h-14 px-4 flex items-center gap-6">
@@ -1428,7 +1428,7 @@ export default function App() {
 
       <div className="flex flex-1 overflow-hidden relative">
         {/* Main Content Area */}
-        <main className="flex-1 overflow-y-auto custom-scrollbar bg-slate-50 relative">
+        <main className="flex-1 overflow-y-auto custom-scrollbar bg-slate-100 relative">
           <div className="p-4 sm:p-6 lg:p-10 max-w-7xl mx-auto min-h-full">
             <AnimatePresence mode="wait">
           
@@ -2336,15 +2336,15 @@ export default function App() {
 
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 {(searchQuery.trim() ? filteredResults.locations : locations).filter(l => l.cameras.some(c => c.status === CameraStatus.ERROR)).map(loc => (
-                  <div key={loc.id} className="bg-white rounded-[2rem] border border-slate-200 overflow-hidden shadow-sm hover:shadow-xl hover:shadow-rose-900/5 transition-all">
-                    <div className="bg-rose-50 p-6 border-b border-rose-100 flex items-center justify-between">
+                  <div key={loc.id} className="bg-white rounded-[2rem] border-2 border-slate-250/90 overflow-hidden shadow-md hover:shadow-2xl hover:border-rose-300 hover:shadow-rose-900/10 transition-all">
+                    <div className="bg-rose-100/50 p-6 border-b border-rose-200 flex items-center justify-between">
                       <div className="flex items-center gap-4">
                         <div className="bg-rose-600 text-white p-3 rounded-2xl shadow-lg shadow-rose-600/20">
                           <Building2 className="w-6 h-6" />
                         </div>
                         <div>
-                          <h3 className="font-black text-rose-900 text-lg uppercase tracking-tight">{loc.name}</h3>
-                          <p className="text-[10px] font-bold text-rose-500 uppercase flex items-center gap-2">
+                          <h3 className="font-black text-rose-950 text-lg uppercase tracking-tight">{loc.name}</h3>
+                          <p className="text-[10px] font-black text-rose-600 uppercase flex items-center gap-2">
                              IP TÉCNICO: <span className="font-mono">{loc.ip}</span> • SRV: {loc.server}
                           </p>
                         </div>
@@ -2355,7 +2355,7 @@ export default function App() {
                             const reportText = `RELATÓRIO CIVA - ${loc.name.toUpperCase()}\nStatus: ${loc.cameras.filter(c => c.status === CameraStatus.ERROR).length} PENDÊNCIAS\nServidor: ${loc.server}\nIP local: ${loc.ip}\n\nCâmeras com Falha:\n${loc.cameras.filter(c => c.status === CameraStatus.ERROR).map(c => `- Câmera ${c.number}`).join('\n')}\n\nGerado em: ${new Date().toLocaleString()}`;
                             handleCopyReport(reportText);
                           }}
-                          className="p-2.5 bg-rose-50 text-rose-600 hover:bg-rose-600 hover:text-white rounded-xl transition-all shadow-sm flex items-center gap-2"
+                          className="p-2.5 bg-white border border-rose-300/80 text-rose-600 hover:bg-rose-600 hover:text-white rounded-xl transition-all shadow-sm flex items-center gap-2 font-bold"
                           title="Copiar Relatório como Texto"
                         >
                           <Copy className="w-4 h-4" />
@@ -2366,28 +2366,28 @@ export default function App() {
                             // Focus on this location's data for printing
                             window.print();
                           }}
-                          className="p-2.5 bg-slate-50 text-slate-600 hover:bg-slate-600 hover:text-white rounded-xl transition-all shadow-sm flex items-center gap-2"
+                          className="p-2.5 bg-white border border-slate-250/80 text-slate-600 hover:bg-slate-600 hover:text-white rounded-xl transition-all shadow-sm flex items-center gap-2"
                           title="Imprimir este Local"
                         >
                           <Printer className="w-4 h-4" />
                         </button>
-                        <span className="text-[10px] font-black text-rose-600 bg-white px-3 py-1 rounded-full shadow-sm border border-rose-100">
+                        <span className="text-[10px] font-black text-rose-800 bg-white px-3 py-1 rounded-full shadow-sm border-2 border-rose-300">
                           {loc.cameras.filter(c => c.status === CameraStatus.ERROR).length} PENDÊNCIAS
                         </span>
                       </div>
                     </div>
                     
                       {loc.cameras.every(c => c.status === CameraStatus.ERROR) ? (
-                        <div className="p-6 bg-amber-50 border-b border-amber-100 flex items-start gap-4">
+                        <div className="p-6 bg-amber-100/40 border-b border-amber-200 flex items-start gap-4">
                           <div className="bg-amber-500 text-white p-3 rounded-2xl shadow-lg shadow-amber-500/20 shrink-0">
                             <AlertCircle className="w-6 h-6" />
                           </div>
                           <div className="flex-1">
                             <div className="flex items-center justify-between mb-1">
-                              <h4 className="text-sm font-black text-amber-900 uppercase tracking-tight italic">PROBLEMA GERAL NO LOCAL</h4>
-                              <span className="text-[10px] font-black text-amber-600 bg-white px-2 py-0.5 rounded shadow-sm border border-amber-100">TODAS AS CÂMERAS FORA</span>
+                              <h4 className="text-sm font-black text-amber-950 uppercase tracking-tight italic">PROBLEMA GERAL NO LOCAL</h4>
+                              <span className="text-[10px] font-black text-amber-700 bg-white px-2 py-0.5 rounded shadow-sm border border-amber-200">TODAS AS CÂMERAS FORA</span>
                             </div>
-                            <p className="text-xs font-bold text-amber-800 uppercase tracking-tight">
+                            <p className="text-xs font-bold text-amber-900 uppercase tracking-tight">
                               {(() => {
                                 const lastLog = maintenanceLogs
                                   .filter(l => l.locationId === loc.id)
@@ -2399,7 +2399,7 @@ export default function App() {
                           <div className="flex items-center gap-2">
                             <button 
                               onClick={() => handleRepairLocationGeneral(loc.id)}
-                              className="p-2.5 bg-emerald-100 text-emerald-700 hover:bg-emerald-600 hover:text-white rounded-xl transition-all shadow-sm flex items-center gap-2"
+                              className="p-2.5 bg-emerald-50 border-2 border-emerald-300 text-emerald-850 hover:bg-emerald-600 hover:text-white rounded-xl transition-all shadow-sm flex items-center gap-2 font-black"
                               title="Reparar Tudo no Local"
                             >
                               <CheckCircle2 className="w-4 h-4" />
@@ -2407,7 +2407,7 @@ export default function App() {
                             </button>
                             <button 
                               onClick={() => handleSelectLocation(loc)}
-                              className="p-2 bg-white rounded-xl border border-amber-200 text-amber-600 hover:bg-amber-600 hover:text-white transition-all shadow-sm"
+                              className="p-2 bg-white rounded-xl border border-amber-300 text-amber-700 hover:bg-amber-600 hover:text-white transition-all shadow-md"
                             >
                               <ChevronRight className="w-4 h-4" />
                             </button>
@@ -2421,30 +2421,30 @@ export default function App() {
                               .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())[0];
                             
                             return (
-                              <div key={cam.id} className="flex items-start gap-4 p-4 bg-slate-50 rounded-2xl border border-slate-100 group hover:border-rose-200 transition-all">
-                                <div className="w-12 h-12 bg-white rounded-xl flex items-center justify-center text-rose-600 shadow-sm border border-slate-100 font-black text-xl italic tracking-tighter">
+                              <div key={cam.id} className="flex items-start gap-4 p-4 bg-slate-100/50 rounded-2xl border border-slate-200 group hover:border-rose-300 transition-all">
+                                <div className="w-12 h-12 bg-white rounded-xl flex items-center justify-center text-rose-700 shadow-sm border-2 border-slate-200 font-black text-xl italic tracking-tighter">
                                   {cam.number}
                                 </div>
                                 <div className="flex-1">
                                   <div className="flex items-center justify-between mb-1">
-                                    <h4 className="text-xs font-black text-slate-800 uppercase tracking-tight">CÂMERA {cam.number}</h4>
-                                    <span className="text-[9px] font-bold text-slate-400 bg-white px-2 py-0.5 rounded shadow-sm">ID: {loc.id.toUpperCase()}-00{cam.number}</span>
+                                    <h4 className="text-xs font-black text-slate-900 uppercase tracking-tight">CÂMERA {cam.number}</h4>
+                                    <span className="text-[9px] font-bold text-slate-500 bg-white px-2 py-0.5 rounded shadow-sm">ID: {loc.id.toUpperCase()}-00{cam.number}</span>
                                   </div>
-                                  <div className="flex items-center gap-2 text-slate-600">
-                                    <Edit3 className="w-3.5 h-3.5 text-rose-500" />
-                                    <p className="text-xs font-bold uppercase text-slate-600 tracking-tight">
+                                  <div className="flex items-center gap-2 text-slate-750">
+                                    <Edit3 className="w-3.5 h-3.5 text-rose-600" />
+                                    <p className="text-xs font-bold uppercase text-slate-800 tracking-tight">
                                       {lastLog ? lastLog.descricaoTecnica.replace('FALHA REPORTADA: ', '') : 'Motivo não especificado'}
                                     </p>
                                   </div>
                                   {lastLog && (
-                                    <p className="text-[9px] text-slate-400 mt-2 font-medium flex items-center gap-1.5 grayscale opacity-70">
-                                      <History className="w-3 h-3" /> Reportado em: {new Date(lastLog.timestamp).toLocaleString('pt-BR')}
+                                    <p className="text-[9px] text-slate-500 mt-2 font-bold flex items-center gap-1.5 grayscale opacity-80">
+                                      <History className="w-3 h-3 text-slate-400" /> Reportado em: {new Date(lastLog.timestamp).toLocaleString('pt-BR')}
                                     </p>
                                   )}
                                 </div>
                                 <button 
                                   onClick={() => handleSelectLocation(loc)}
-                                  className="self-center p-2 bg-white rounded-xl border border-slate-100 text-slate-400 hover:text-blue-600 hover:border-blue-200 transition-all shadow-sm"
+                                  className="self-center p-2 bg-white rounded-xl border border-slate-200 text-slate-500 hover:text-blue-600 hover:border-blue-300 transition-all shadow-sm"
                                 >
                                   <ChevronRight className="w-4 h-4" />
                                 </button>

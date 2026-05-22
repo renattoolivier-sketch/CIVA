@@ -44,8 +44,8 @@ const SystemActivityLogs: React.FC<SystemActivityLogsProps> = ({
   const [sortOrder, setSortOrder] = useState<'desc' | 'asc'>('desc');
 
   // Copy SQL script tool
-  const sqlScript = `-- 1. Criar Tabela de Logs de Atividades do Sistema
-CREATE TABLE IF NOT EXISTS activity_logs (
+  const sqlScript = `-- 1. Criar Tabela de Logs de Atividades do Sistema se não existir
+CREATE TABLE IF NOT EXISTS public.activity_logs (
   id TEXT PRIMARY KEY,
   username TEXT NOT NULL,
   role TEXT NOT NULL,
@@ -57,13 +57,40 @@ CREATE TABLE IF NOT EXISTS activity_logs (
 );
 
 -- 2. Habilitar segurança em nível de linha (RLS)
-ALTER TABLE activity_logs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.activity_logs ENABLE ROW LEVEL SECURITY;
 
--- 3. Criar política de leitura/escrita pública (conforme padrão do projeto)
-CREATE POLICY "Acesso público activity_logs" ON activity_logs FOR ALL USING (true) WITH CHECK (true);
+-- 3. Criar política de leitura/escrita pública com segurança contra duplicidade
+DROP POLICY IF EXISTS "Acesso público activity_logs" ON public.activity_logs;
+CREATE POLICY "Acesso público activity_logs" ON public.activity_logs FOR ALL USING (true) WITH CHECK (true);
 
--- 4. Adicionar ao canal de sincronização em tempo real (Realtime)
-ALTER PUBLICATION supabase_realtime ADD TABLE activity_logs;`;
+-- 4. Adicionar Tabelas ao Realtime de forma segura (impede erros se a tabela já fizer parte da publicação)
+DO $$
+BEGIN
+  BEGIN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.secretariats;
+  EXCEPTION WHEN duplicate_object THEN NULL; WHEN OTHERS THEN NULL;
+  END;
+
+  BEGIN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.locations;
+  EXCEPTION WHEN duplicate_object THEN NULL; WHEN OTHERS THEN NULL;
+  END;
+
+  BEGIN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.maintenance_logs;
+  EXCEPTION WHEN duplicate_object THEN NULL; WHEN OTHERS THEN NULL;
+  END;
+
+  BEGIN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.users;
+  EXCEPTION WHEN duplicate_object THEN NULL; WHEN OTHERS THEN NULL;
+  END;
+
+  BEGIN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.activity_logs;
+  EXCEPTION WHEN duplicate_object THEN NULL; WHEN OTHERS THEN NULL;
+  END;
+END $$;`;
 
   const copySqlToClipboard = () => {
     navigator.clipboard.writeText(sqlScript);
