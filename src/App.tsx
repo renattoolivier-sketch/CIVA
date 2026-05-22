@@ -2336,7 +2336,7 @@ export default function App() {
 
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 {(searchQuery.trim() ? filteredResults.locations : locations).filter(l => l.cameras.some(c => c.status === CameraStatus.ERROR)).map(loc => (
-                  <div key={loc.id} className="bg-white rounded-[2rem] border-2 border-slate-250/90 overflow-hidden shadow-md hover:shadow-2xl hover:border-rose-300 hover:shadow-rose-900/10 transition-all">
+                  <div key={loc.id} className="bg-white rounded-[2rem] border-2 border-rose-200 overflow-hidden shadow-md hover:shadow-2xl hover:border-black hover:shadow-rose-900/10 transition-all">
                     <div className="bg-rose-100/50 p-6 border-b border-rose-200 flex items-center justify-between">
                       <div className="flex items-center gap-4">
                         <div className="bg-rose-600 text-white p-3 rounded-2xl shadow-lg shadow-rose-600/20">
@@ -2366,7 +2366,7 @@ export default function App() {
                             // Focus on this location's data for printing
                             window.print();
                           }}
-                          className="p-2.5 bg-white border border-slate-250/80 text-slate-600 hover:bg-slate-600 hover:text-white rounded-xl transition-all shadow-sm flex items-center gap-2"
+                          className="p-2.5 bg-white border border-slate-200 text-slate-600 hover:bg-slate-600 hover:text-white rounded-xl transition-all shadow-sm flex items-center gap-2"
                           title="Imprimir este Local"
                         >
                           <Printer className="w-4 h-4" />
