@@ -43,9 +43,11 @@ import {
   Smartphone,
   Copy,
   ShieldAlert,
-  Key
+  Key,
+  Terminal
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import SystemActivityLogs from './components/SystemActivityLogs';
 import { 
   CameraStatus, 
   Secretariat, 
@@ -165,7 +167,7 @@ function MapBoundsHandler({ mappedLocations }: { mappedLocations: { coords: { la
 }
 
 export default function App() {
-  const [currentView, setCurrentView] = useState<'dashboard' | 'cameras' | 'history' | 'locations' | 'reports' | 'map' | 'users'>('dashboard');
+  const [currentView, setCurrentView] = useState<'dashboard' | 'cameras' | 'history' | 'locations' | 'reports' | 'map' | 'users' | 'logs'>('dashboard');
   const [selectedSecretariat, setSelectedSecretariat] = useState<Secretariat | null>(null);
   const [selectedLocation, setSelectedLocation] = useState<Location | null>(null);
   const [selectedTab, setSelectedTab] = useState<string | null>(null);
@@ -173,6 +175,51 @@ export default function App() {
   const [locations, setLocations] = useState<Location[]>(initialLocations);
   const [maintenanceLogs, setMaintenanceLogs] = useState<MaintenanceLog[]>([]);
   const [appUsers, setAppUsers] = useState<UserProfile[]>([]);
+  
+  // System Activity Audit Logs
+  const [activityLogs, setActivityLogs] = useState<any[]>(() => {
+    try {
+      const saved = localStorage.getItem('civa_activity_logs');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  const logActivity = async (action: string, details: string, currentUserOverride?: UserProfile) => {
+    const activeUser = currentUserOverride || user;
+    if (!activeUser) return;
+
+    const newLog = {
+      id: crypto.randomUUID(),
+      username: activeUser.username,
+      role: activeUser.role,
+      action: action,
+      details: details,
+      timestamp: new Date().toISOString(),
+      ip_address: 'Local/Client'
+    };
+
+    // Immediate UI update and LocalStorage persistence
+    setActivityLogs(prev => [newLog, ...prev]);
+    try {
+      const currentLogsString = localStorage.getItem('civa_activity_logs');
+      const currentLogs = currentLogsString ? JSON.parse(currentLogsString) : [];
+      localStorage.setItem('civa_activity_logs', JSON.stringify([newLog, ...currentLogs]));
+    } catch (e) {
+      console.error('[CIVA] Erro ao salvar localmente o log:', e);
+    }
+
+    // Attempt to persist to Supabase if present
+    if (supabase) {
+      try {
+        await supabase.from('activity_logs').insert(newLog);
+      } catch (err) {
+        // Safe check catch, won't block execution if table hasn't been created yet
+        console.warn('[CIVA] Log de auditoria persistido localmente. Execute a migração SQL do Supabase para suporte a nuvem em tempo real.');
+      }
+    }
+  };
   const [repairingCamera, setRepairingCamera] = useState<{ locationId: string, camera: Camera } | null>(null);
   const [reportingCamProblem, setReportingCamProblem] = useState<{ locationId: string, camera: Camera } | null>(null);
   const [isSelectingLocForReport, setIsSelectingLocForReport] = useState(false);
@@ -284,6 +331,7 @@ export default function App() {
               const newUser: UserProfile = { username, role: 'admin' };
               setUser(newUser);
               localStorage.setItem('civa_user', JSON.stringify(newUser));
+              logActivity('Acesso/Login', `Usuário administrador logou via plano de contingência`, newUser);
               setLoginError(null);
               return;
           }
@@ -298,6 +346,7 @@ export default function App() {
         };
         setUser(newUser);
         localStorage.setItem('civa_user', JSON.stringify(newUser));
+        logActivity('Acesso/Login', `Usuário '${newUser.username}' (${newUser.role.toUpperCase()}) logou com sucesso`, newUser);
         setLoginError(null);
       } catch (err) {
         setLoginError('Erro ao conectar ao servidor de banco de dados.');
@@ -308,6 +357,7 @@ export default function App() {
         const newUser: UserProfile = { username, role: 'admin' };
         setUser(newUser);
         localStorage.setItem('civa_user', JSON.stringify(newUser));
+        logActivity('Acesso/Login', `Usuário principal '${username}' logado localmente (Offline)`, newUser);
       } else {
         setLoginError('Sincronização indisponível e falha no login local.');
       }
@@ -315,6 +365,9 @@ export default function App() {
   };
 
   const handleLogout = async () => {
+    if (user) {
+      logActivity('Acesso/Logout', `Usuário '${user.username}' encerrou a sessão`);
+    }
     setUser(null);
     localStorage.removeItem('civa_user');
     if (supabase) {
@@ -339,6 +392,7 @@ export default function App() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'locations' }, (p) => handleRealtimeChange('locations', p))
       .on('postgres_changes', { event: '*', schema: 'public', table: 'maintenance_logs' }, (p) => handleRealtimeChange('maintenance_logs', p))
       .on('postgres_changes', { event: '*', schema: 'public', table: 'users' }, (p) => handleRealtimeChange('users', p))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'activity_logs' }, (p) => handleRealtimeChange('activity_logs', p))
       .subscribe((status) => {
         console.log('[Realtime] Status da Conexão:', status);
         if (status === 'SUBSCRIBED') {
@@ -420,6 +474,20 @@ export default function App() {
       if (userRes.data) {
         setAppUsers(userRes.data);
       }
+
+      // Safe fetch for activity_logs
+      try {
+        const { data: logsData, error: logsError } = await supabase
+          .from('activity_logs')
+          .select('*')
+          .order('timestamp', { ascending: false });
+        if (!logsError && logsData) {
+          setActivityLogs(logsData);
+        }
+      } catch (logErr) {
+        console.warn('[CIVA] Tabela activity_logs não encontrada no Supabase. Usando local persistence.');
+      }
+
       setSyncStatus('synced');
     } catch (err: any) {
       console.error('Realtime load error:', err);
@@ -539,9 +607,13 @@ export default function App() {
     const loc = locations.find(l => l.id === locationId);
     if (!loc || !supabase) return;
 
+    let targetCamNumber = 0;
+    let nextStatus = CameraStatus.ONLINE;
     const updatedCameras = loc.cameras.map(cam => {
       if (cam.id === cameraId) {
+        targetCamNumber = cam.number;
         const newStatus = cam.status === CameraStatus.ONLINE ? CameraStatus.ERROR : CameraStatus.ONLINE;
+        nextStatus = newStatus;
         return { ...cam, status: newStatus };
       }
       return cam;
@@ -554,6 +626,11 @@ export default function App() {
 
     if (error) {
       alert(`Erro ao atualizar status: ${error.message}`);
+    } else {
+      logActivity(
+        'Alterou Câmera', 
+        `Alterou status da câmera ${targetCamNumber} em ${loc.name} para ${nextStatus.toUpperCase()}`
+      );
     }
   };
 
@@ -591,6 +668,7 @@ export default function App() {
       alert('Erro ao registrar falha.');
     } else {
       setSyncStatus('synced');
+      logActivity('Reportou Falha', `Reportou falha na câmera ${cam.number} em ${loc.name}: ${reason.toUpperCase()}`);
       await loadData();
     }
     setReportingCamProblem(null);
@@ -638,6 +716,8 @@ export default function App() {
       alert(`Erro ao excluir: ${error.message}`);
     } else {
       setSyncStatus('synced');
+      const itemLabel = deletingItem.type === 'sec' ? 'Secretaria' : deletingItem.type === 'loc' ? 'Local' : 'Câmera';
+      logActivity('Excluiu Registro', `Removeu ${itemLabel}: "${deletingItem.name}" (ID/Nº: ${deletingItem.id})`);
       await loadData();
     }
     setDeletingItem(null);
@@ -670,6 +750,7 @@ export default function App() {
       alert('Erro ao registrar problema geral.');
     } else {
       setSyncStatus('synced');
+      logActivity('Problema Geral', `Registrou problema geral para o local ${loc.name}: ${problemType.toUpperCase()}`);
       await loadData();
     }
     setReportingLocProblem(null);
@@ -696,6 +777,7 @@ export default function App() {
       alert(`Erro ao adicionar câmera: ${error.message}`);
     } else {
       setSyncStatus('synced');
+      logActivity('Adicionou Câmera', `Adicionou nova câmera (Nº ${nextNumber}) ao local "${loc.name}"`);
       await loadData();
     }
   };
@@ -722,6 +804,7 @@ export default function App() {
       alert(`Erro ao salvar secretaria: ${error.message}`);
     } else {
       setSyncStatus('synced');
+      logActivity(isEditingSec ? 'Editou Secretaria' : 'Adicionou Secretaria', `Nome: "${name}"`);
       await loadData();
       setIsEditingSec(null);
       setIsAddingSec(false);
@@ -763,6 +846,7 @@ export default function App() {
       alert(`Erro ao salvar local: ${error.message}`);
     } else {
       setSyncStatus('synced');
+      logActivity(isEditingLoc ? 'Editou Local' : 'Adicionou Local', `Nome: "${name}", Servidor: "${server}"`);
       await loadData();
       setIsEditingLoc(null);
       setIsAddingLoc(false);
@@ -805,6 +889,10 @@ export default function App() {
       alert('Erro ao concluir reparo.');
     } else {
       setSyncStatus('synced');
+      logActivity(
+        'Resolveu Pendência', 
+        `Realizou reparo na câmera ${repairingCamera.camera.number} em "${selectedLocation.name}": "${formData.get('descricaoTecnica')}"`
+      );
       await loadData();
       setRepairingCamera(null);
     }
@@ -843,6 +931,10 @@ export default function App() {
       alert('Erro ao realizar reparo geral.');
     } else {
       setSyncStatus('synced');
+      logActivity(
+        'Resolveu Reparo Geral', 
+        `Restabeleceu comunicação geral de todas as câmeras para o local "${loc.name}"`
+      );
       await loadData();
     }
   };
@@ -879,6 +971,7 @@ export default function App() {
       alert(`Erro: ${error.message}`);
     } else {
       setSyncStatus('synced');
+      logActivity('Criou de Usuário', `Cadastrou novo usuário: "${username}" com função "${role.toUpperCase()}"`);
       await loadData();
       (e.target as HTMLFormElement).reset();
     }
@@ -895,9 +988,27 @@ export default function App() {
       if (error) {
         alert(`Erro ao excluir: ${error.message}`);
       } else {
+        logActivity('Excluiu Usuário', `Removeu conta de usuário ID: ${userId}`);
         loadData();
       }
     }
+  };
+
+  const handleClearLogs = async () => {
+    if (!confirm('Deseja realmente limpar todos os logs de atividades do sistema?')) return;
+    
+    setActivityLogs([]);
+    localStorage.removeItem('civa_activity_logs');
+    
+    if (supabase) {
+      try {
+        await supabase.from('activity_logs').delete().neq('id', 'placeholder-uuid-never-matching');
+      } catch (e) {
+        console.warn('[CIVA] Tabela activity_logs não existe ou erro de RLS no Supabase. Os logs foram limpos localmente.');
+      }
+    }
+    
+    alert('Histórico de logs limpo com sucesso!');
   };
 
   const handleFixAllLinks = async () => {
@@ -1282,12 +1393,20 @@ export default function App() {
             <AlertTriangle className="w-4 h-4" /> Relatórios
           </button>
           {user?.role === 'admin' && (
-            <button 
-              onClick={() => setCurrentView('users')}
-              className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all whitespace-nowrap ${currentView === 'users' ? 'bg-blue-600 text-white shadow-lg' : 'text-blue-100 hover:bg-blue-700'}`}
-            >
-              <Users className="w-4 h-4" /> Usuários
-            </button>
+            <>
+              <button 
+                onClick={() => setCurrentView('users')}
+                className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all whitespace-nowrap ${currentView === 'users' ? 'bg-blue-600 text-white shadow-lg' : 'text-blue-100 hover:bg-blue-700'}`}
+              >
+                <Users className="w-4 h-4" /> Usuários
+              </button>
+              <button 
+                onClick={() => setCurrentView('logs')}
+                className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all whitespace-nowrap ${currentView === 'logs' ? 'bg-blue-600 text-white shadow-lg' : 'text-blue-100 hover:bg-blue-700'}`}
+              >
+                <Terminal className="w-4 h-4" /> Logs
+              </button>
+            </>
           )}
         </div>
       </header>
@@ -1590,44 +1709,149 @@ export default function App() {
                 </div>
               </section>
 
-              <section className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-                <div className="p-6 border-b border-slate-100 flex items-center justify-between">
-                  <h3 className="font-bold text-slate-800">Alertas Recentes</h3>
-                  <button 
-                    onClick={() => setCurrentView('secretariats')}
-                    className="text-sm font-semibold text-blue-600 hover:text-blue-700"
-                  >
-                    Ver Tudo
-                  </button>
-                </div>
-                <div className="divide-y divide-slate-50">
-                  {locations.filter(l => l.cameras.some(c => c.status === CameraStatus.ERROR)).slice(0, 5).map(loc => (
-                    <div key={loc.id} className="p-4 flex items-center justify-between hover:bg-slate-50 transition-colors">
-                      <div className="flex items-center gap-4">
-                        <div className="bg-rose-100 p-2 rounded-lg">
-                          <AlertCircle className="w-5 h-5 text-rose-600" />
-                        </div>
-                        <div>
-                          <p className="font-semibold text-slate-800">{loc.name}</p>
-                          <p className="text-xs text-slate-500">{loc.cameras.filter(c => c.status === CameraStatus.ERROR).length} câmeras com erro • IP: {loc.ip}</p>
-                        </div>
+              {/* Dynamic Dashboard Extras: Indicators 1 & 2 */}
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                {/* 1. Camera Operational Efficiency Gauge (Col span 5) */}
+                <div className="lg:col-span-5 bg-white p-6 rounded-3xl border border-slate-200 shadow-sm flex flex-col justify-between">
+                  <div>
+                    <h3 className="text-xs font-black text-slate-400 uppercase tracking-[0.15em] mb-4 flex items-center gap-2">
+                      <HeartPulse className="w-4 h-4 text-emerald-500" />
+                      EFICIÊNCIA OPERACIONAL DO CIVA
+                    </h3>
+                    <p className="text-xs text-slate-500 font-medium leading-relaxed mb-6">
+                      Métrica consolidada de disponibilidade de canais CCTV em toda a rede de monitoramento de Aquiraz.
+                    </p>
+                  </div>
+
+                  <div className="flex flex-col sm:flex-row items-center justify-around gap-6 py-2">
+                    {/* SVG Radial Progress Circle */}
+                    <div className="relative w-36 h-36 flex items-center justify-center shrink-0">
+                      {/* Outer Ring Background */}
+                      <svg className="w-full h-full transform -rotate-90">
+                        <circle
+                          cx="72"
+                          cy="72"
+                          r="62"
+                          stroke="#f1f5f9"
+                          strokeWidth="12"
+                          fill="transparent"
+                          className="transition-all"
+                        />
+                        {/* Dynamic Progress Fill */}
+                        <circle
+                          cx="72"
+                          cy="72"
+                          r="62"
+                          stroke={stats.error > 0 ? (stats.error > stats.total * 0.2 ? '#f43f5e' : '#f59e0b') : '#10b981'}
+                          strokeWidth="12"
+                          fill="transparent"
+                          strokeDasharray={2 * Math.PI * 62}
+                          strokeDashoffset={
+                            2 * Math.PI * 62 * (1 - (stats.total > 0 ? stats.online / stats.total : 1))
+                          }
+                          strokeLinecap="round"
+                          className="transition-all duration-700 ease-out"
+                        />
+                      </svg>
+                      {/* Percent Tag inside Circle */}
+                      <div className="absolute text-center mt-1">
+                        <p className="text-3xl font-black text-slate-800 font-mono tracking-tight">
+                          {stats.total > 0 ? Math.round((stats.online / stats.total) * 100) : 100}%
+                        </p>
+                        <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest mt-0.5">ESTÁVEL</p>
                       </div>
-                      <button 
-                        onClick={() => handleSelectLocation(loc)}
-                        className="p-2 hover:bg-emerald-50 rounded-full transition-colors flex items-center justify-center border border-slate-100 hover:border-emerald-200"
-                      >
-                        <ChevronRight className="w-5 h-5 text-slate-400" />
-                      </button>
                     </div>
-                  ))}
-                  {stats.error === 0 && (
-                    <div className="p-12 text-center">
-                      <CheckCircle2 className="w-12 h-12 text-emerald-200 mx-auto mb-3" />
-                      <p className="text-slate-500 font-medium">Nenhum problema detectado</p>
+
+                    {/* Quick Analytics Metadata */}
+                    <div className="space-y-4 w-full sm:w-auto">
+                      <div className="border-l-4 border-emerald-500 pl-3">
+                        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Canais Ativos</p>
+                        <p className="text-base font-extrabold text-slate-800">{stats.online} / {stats.total} Links</p>
+                      </div>
+                      <div className="border-l-4 border-rose-500 pl-3">
+                        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Incidentes</p>
+                        <p className="text-base font-extrabold text-slate-800">{stats.error} Câmeras Off</p>
+                      </div>
+                      <div className="bg-slate-50 rounded-xl p-2 text-[9px] font-black text-slate-500 uppercase tracking-widest text-center border border-slate-100">
+                        SLA Recomendado &gt; 95%
+                      </div>
                     </div>
-                  )}
+                  </div>
+
+                  <div className="mt-6 pt-4 border-t border-slate-100 flex items-center justify-between text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                    <span>Métrica Geral em Tempo Real</span>
+                    <span className="text-emerald-600">✓ Ativo</span>
+                  </div>
                 </div>
-              </section>
+
+                {/* 2. Compact System Activity Logs Audit Feed (Col span 7) */}
+                <div className="lg:col-span-7 bg-white p-6 rounded-3xl border border-slate-200 shadow-sm flex flex-col justify-between">
+                  <div>
+                    <div className="flex items-center justify-between mb-4">
+                      <h3 className="text-xs font-black text-slate-400 uppercase tracking-[0.15em] flex items-center gap-2">
+                        <Terminal className="w-4 h-4 text-indigo-500" />
+                        AUDITORIA E ATIVIDADES DA CENTRAL
+                      </h3>
+                      {user?.role === 'admin' && (
+                        <button
+                          onClick={() => setCurrentView('logs')}
+                          className="text-[9px] font-black text-blue-600 hover:text-blue-700 bg-blue-50 hover:bg-blue-100 px-2 py-1 rounded-lg uppercase tracking-wider transition-colors cursor-pointer"
+                        >
+                          Ver Histórico Completo
+                        </button>
+                      )}
+                    </div>
+                    <p className="text-xs text-slate-500 font-medium leading-relaxed mb-6">
+                      Atividade operacional recente realizada por usuários cadastrados nos servidores do CIVA.
+                    </p>
+                  </div>
+
+                  {/* Feed Items */}
+                  <div className="space-y-3.5 flex-1 flex flex-col justify-center">
+                    {activityLogs.length > 0 ? (
+                      activityLogs.slice(0, 4).map((log, index) => {
+                        const isDeletion = log.action.toLowerCase().includes('excluiu') || log.action.toLowerCase().includes('deletar');
+                        const isSuccess = log.action.toLowerCase().includes('login') || log.action.toLowerCase().includes('resolveu') || log.action.toLowerCase().includes('adicionou');
+                        return (
+                          <div 
+                            key={log.id || index} 
+                            className="bg-slate-50/50 border border-slate-100 rounded-2xl p-3 flex items-start gap-3 hover:bg-slate-50 transition-colors"
+                          >
+                            <div className={`w-2.5 h-2.5 rounded-full mt-1.5 shrink-0 ${
+                              isDeletion ? 'bg-rose-500' :
+                              isSuccess ? 'bg-emerald-500' :
+                              'bg-indigo-500'
+                            }`} />
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center justify-between gap-2 flex-wrap mb-1">
+                                <span className="text-[10px] font-extrabold text-slate-800 uppercase block truncate">
+                                  {log.username}
+                                </span>
+                                <span className="text-[9px] font-semibold text-slate-400 font-mono">
+                                  {new Date(log.timestamp).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
+                                </span>
+                              </div>
+                              <p className="text-[11px] font-semibold text-slate-600 leading-normal uppercase tracking-wide truncate">
+                                <span className="text-indigo-600 mr-1.5">[{log.action}]</span> {log.details}
+                              </p>
+                            </div>
+                          </div>
+                        );
+                      })
+                    ) : (
+                      <div className="py-6 text-center text-slate-400 flex flex-col items-center justify-center">
+                        <Terminal className="w-8 h-8 text-slate-200 mb-2" />
+                        <p className="text-[10px] font-bold uppercase tracking-widest">Nenhuma atividade registrada ainda</p>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="mt-6 pt-4 border-t border-slate-100 text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center justify-between">
+                    <span>Atualizado Instantaneamente</span>
+                    <span>Total: {activityLogs.length}</span>
+                  </div>
+                </div>
+              </div>
             </motion.div>
           )}
 
@@ -2430,6 +2654,23 @@ export default function App() {
                   </div>
                 </div>
               </div>
+            </motion.div>
+          )}
+
+          {/* System Audit Activity Logs */}
+          {currentView === 'logs' && user?.role === 'admin' && (
+            <motion.div 
+              key="logs"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              className="space-y-6"
+            >
+              <SystemActivityLogs 
+                logs={activityLogs} 
+                onClearLogs={handleClearLogs}
+                supabaseConnected={Boolean(supabase)}
+              />
             </motion.div>
           )}
 
