@@ -233,6 +233,8 @@ export default function App() {
   const [isAddingLoc, setIsAddingLoc] = useState(false);
   const [inputMode, setInputMode] = useState<'link' | 'coords'>('link');
   const [reportingLocProblem, setReportingLocProblem] = useState<Location | null>(null);
+  const [customProblemText, setCustomProblemText] = useState('');
+  const [showCustomProblemInput, setShowCustomProblemInput] = useState(false);
   const [deletingItem, setDeletingItem] = useState<{ type: 'sec' | 'loc' | 'cam', id: string, extraId?: string, name: string } | null>(null);
 
   // Auth State
@@ -515,6 +517,14 @@ export default function App() {
 
     return () => clearInterval(interval);
   }, [user, supabase]);
+
+  // Limpa o estado do problema personalizado ao fechar/abrir o modal correspondente
+  useEffect(() => {
+    if (!reportingLocProblem) {
+      setCustomProblemText('');
+      setShowCustomProblemInput(false);
+    }
+  }, [reportingLocProblem]);
 
   // Stats
   const stats = useMemo(() => {
@@ -3128,23 +3138,72 @@ export default function App() {
                 </p>
               </div>
 
-              <div className="p-8 pt-4 space-y-3">
-                {[
-                  'Sem Energia Elétrica',
-                  'NVR Desligado / Travado',
-                  'Interrupção de Link / Internet',
-                  'Local em Reforma / Obra',
-                  'Vandalismo / Furto de Cabeamento',
-                  'Outro Problema Geral'
-                ].map(problem => (
-                  <button 
-                    key={problem}
-                    onClick={() => handleReportGeneralProblem(reportingLocProblem.id, problem)}
-                    className="w-full text-left p-4 rounded-2xl bg-slate-50 border border-slate-100 hover:border-amber-500 hover:bg-amber-50 transition-all group"
-                  >
-                    <span className="text-sm font-black text-slate-700 uppercase tracking-tight group-hover:text-amber-700">{problem}</span>
-                  </button>
-                ))}
+              <div className="p-8 pt-4">
+                {!showCustomProblemInput ? (
+                  <div className="space-y-3">
+                    {[
+                      'Sem Energia Elétrica',
+                      'NVR Desligado / Travado',
+                      'Interrupção de Link / Internet',
+                      'Local em Reforma / Obra',
+                      'Vandalismo / Furto de Cabeamento'
+                    ].map(problem => (
+                      <button 
+                        key={problem}
+                        onClick={() => handleReportGeneralProblem(reportingLocProblem.id, problem)}
+                        className="w-full text-left p-4 rounded-2xl bg-slate-50 border border-slate-100 hover:border-amber-500 hover:bg-amber-50 transition-all group"
+                      >
+                        <span className="text-sm font-black text-slate-700 uppercase tracking-tight group-hover:text-amber-700">{problem}</span>
+                      </button>
+                    ))}
+
+                    <button 
+                      onClick={() => setShowCustomProblemInput(true)}
+                      className="w-full text-left p-4 rounded-2xl bg-slate-50 border border-slate-100 hover:border-amber-500 hover:bg-amber-50 transition-all group flex items-center justify-between"
+                    >
+                      <span className="text-sm font-black text-slate-700 uppercase tracking-tight group-hover:text-amber-700">Outro Problema Geral</span>
+                      <ChevronRight className="w-4 h-4 text-slate-400 group-hover:text-amber-600 transition-colors" />
+                    </button>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    <div className="space-y-2">
+                      <label className="text-[11px] font-black text-slate-500 uppercase tracking-widest block">
+                        Descreva o problema ocorrido
+                      </label>
+                      <textarea
+                        value={customProblemText}
+                        onChange={(e) => setCustomProblemText(e.target.value)}
+                        placeholder="Digite aqui o problema geral do local..."
+                        className="w-full p-4 bg-slate-50 border border-slate-200 rounded-2xl text-xs font-bold leading-relaxed focus:ring-4 focus:ring-amber-500/10 focus:border-amber-500 outline-none transition-all resize-none min-h-[120px] text-slate-800"
+                        autoFocus
+                      />
+                    </div>
+
+                    <div className="flex gap-3">
+                      <button
+                        onClick={() => {
+                          setShowCustomProblemInput(false);
+                          setCustomProblemText('');
+                        }}
+                        className="flex-1 py-3.5 bg-slate-50 border border-slate-200 hover:bg-slate-100 text-slate-700 rounded-xl text-xs font-black uppercase tracking-widest transition-all"
+                      >
+                        Voltar
+                      </button>
+                      <button
+                        disabled={!customProblemText.trim()}
+                        onClick={() => {
+                          if (customProblemText.trim()) {
+                            handleReportGeneralProblem(reportingLocProblem.id, customProblemText.trim());
+                          }
+                        }}
+                        className="flex-1 py-3.5 bg-amber-500 hover:bg-amber-600 disabled:opacity-40 disabled:hover:bg-amber-500 text-white rounded-xl text-xs font-black uppercase tracking-widest transition-all shadow-lg shadow-amber-500/15"
+                      >
+                        Confirmar
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             </motion.div>
           </div>
