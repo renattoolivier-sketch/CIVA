@@ -39,6 +39,8 @@ import {
   User as UserIcon,
   Plus,
   X,
+  Download,
+  Smartphone,
   Copy,
   ShieldAlert,
   Key
@@ -197,6 +199,49 @@ export default function App() {
   // Sync Status
   const [syncStatus, setSyncStatus] = useState<'synced' | 'syncing' | 'error' | 'idle'>('idle');
   const [syncErrorMessage, setSyncErrorMessage] = useState<string | null>(null);
+
+  // PWA Install State
+  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
+  const [isAppInstalled, setIsAppInstalled] = useState(false);
+
+  useEffect(() => {
+    const handleBeforeInstallPrompt = (e: Event) => {
+      e.preventDefault();
+      setDeferredPrompt(e);
+    };
+
+    const handleAppInstalled = () => {
+      setIsAppInstalled(true);
+      setDeferredPrompt(null);
+      console.log('[CIVA PWA] Aplicativo instalado com sucesso!');
+    };
+
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    window.addEventListener('appinstalled', handleAppInstalled);
+
+    if (window.matchMedia('(display-mode: standalone)').matches) {
+      setIsAppInstalled(true);
+    }
+
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+      window.removeEventListener('appinstalled', handleAppInstalled);
+    };
+  }, []);
+
+  const handleInstallClick = () => {
+    if (deferredPrompt) {
+      deferredPrompt.prompt();
+      deferredPrompt.userChoice.then((choiceResult: { outcome: string }) => {
+        if (choiceResult.outcome === 'accepted') {
+          console.log('[CIVA PWA] Usuário aceitou a instalação.');
+        } else {
+          console.log('[CIVA PWA] Usuário recusou a instalação.');
+        }
+        setDeferredPrompt(null);
+      });
+    }
+  };
 
   // Sync selectedLocation with locations array when it changes
   useEffect(() => {
@@ -1193,6 +1238,17 @@ export default function App() {
                     <LogOut className="w-4 h-4 text-rose-500" />
                     <span className="text-[10px] font-black uppercase tracking-widest">Sair do Sistema</span>
                   </button>
+                  {deferredPrompt && (
+                    <div className="px-2 py-1.5 border-t border-slate-100 bg-emerald-50/20">
+                      <button 
+                        onClick={handleInstallClick}
+                        className="w-full px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl flex items-center justify-center gap-2 transition-all shadow-sm shadow-emerald-500/10 active:scale-[0.98]"
+                      >
+                        <Download className="w-3.5 h-3.5 text-white animate-bounce" />
+                        <span className="text-[9px] font-black uppercase tracking-widest">Instalar PWA</span>
+                      </button>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
