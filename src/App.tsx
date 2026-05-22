@@ -412,13 +412,15 @@ export default function App() {
     };
   }, [user, supabase]);
 
-  const loadData = async () => {
+  const loadData = async (isBackground = false) => {
     if (!supabase) {
       setSyncStatus('error');
       setSyncErrorMessage('Supabase não configurado. Verifique as variáveis de ambiente (VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY) no Vercel.');
       return;
     }
-    setSyncStatus('syncing');
+    if (!isBackground) {
+      setSyncStatus('syncing');
+    }
     setSyncErrorMessage(null);
 
     try {
@@ -501,6 +503,18 @@ export default function App() {
     if (!user) return;
     loadData();
   }, [user]);
+
+  // Sincronização periódica secundária para garantir tempo real entre múltiplos operadores
+  useEffect(() => {
+    if (!user || !supabase) return;
+
+    // Busca atualizações a cada 6 segundos para manter todos os navegadores em sincronia sem precisar de F5
+    const interval = setInterval(() => {
+      loadData(true);
+    }, 6000);
+
+    return () => clearInterval(interval);
+  }, [user, supabase]);
 
   // Stats
   const stats = useMemo(() => {
